@@ -1,0 +1,66 @@
+name: eatbetter-backend
+
+services:
+  db:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-eatbetter}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-eatbetter}
+      POSTGRES_DB: ${POSTGRES_DB:-eatbetter}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+      start_period: 5s
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      APP_ENV: ${APP_ENV:-development}
+      HTTP_PORT: 8080
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      HTTP_READ_HEADER_TIMEOUT: ${HTTP_READ_HEADER_TIMEOUT:-5s}
+      HTTP_IDLE_TIMEOUT: ${HTTP_IDLE_TIMEOUT:-60s}
+      SHUTDOWN_TIMEOUT: ${SHUTDOWN_TIMEOUT:-10s}
+      DATABASE_URL: postgres://${POSTGRES_USER:-eatbetter}:${POSTGRES_PASSWORD:-eatbetter}@db:5432/${POSTGRES_DB:-eatbetter}?sslmode=disable
+      DB_MAX_CONNS: ${DB_MAX_CONNS:-10}
+      DB_MIN_CONNS: ${DB_MIN_CONNS:-1}
+      DB_MAX_CONN_LIFETIME: ${DB_MAX_CONN_LIFETIME:-30m}
+      DB_PING_TIMEOUT: ${DB_PING_TIMEOUT:-2s}
+    ports:
+      - "${HTTP_PORT:-8080}:8080"
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:8080/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    init: true
+
+  migrate:
+    image: migrate/migrate:v4.18.3
+    profiles: ["tools"]
+    entrypoint:
+      - /usr/local/bin/migrate
+      - -path=/migrations
+      - -database
+      - postgres://${POSTGRES_USER:-eatbetter}:${POSTGRES_PASSWORD:-eatbetter}@db:5432/${POSTGRES_DB:-eatbetter}?sslmode=disable
+    command: ["up"]
+    volumes:
+      - ./migrations:/migrations:ro
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  postgres_data:

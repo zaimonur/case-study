@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 
-	"eatbetter-backend/internal/config"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/zaimonur/case-study/case-study-eatbetter-backend/internal/config"
 )
 
 // Open creates a PostgreSQL connection pool and verifies that the database is reachable.

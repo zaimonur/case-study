@@ -1,4 +1,4 @@
-module eatbetter-backend
+module github.com/zaimonur/case-study/case-study-eatbetter-backend
 
 go 1.26
 

@@ -10,9 +10,9 @@ import (
 	"os/signal"
 	"syscall"
 
-	"eatbetter-backend/internal/config"
-	"eatbetter-backend/internal/httpapi"
-	"eatbetter-backend/internal/platform/database"
+	"github.com/zaimonur/case-study/case-study-eatbetter-backend/internal/config"
+	"github.com/zaimonur/case-study/case-study-eatbetter-backend/internal/httpapi"
+	"github.com/zaimonur/case-study/case-study-eatbetter-backend/internal/platform/database"
 )
 
 func main() {

@@ -1,6 +1,6 @@
 # EatBetter Backend
 
-Phase 1 provides the backend foundation for the EatBetter case study: a Go REST API, PostgreSQL, Docker-based local development, explicit migrations, health checks, structured logging, and graceful shutdown. Food and meal domain behavior is intentionally not part of this phase.
+The EatBetter backend currently includes the Phase 1 runtime foundation and the Phase 2 canonical food domain foundation. It provides a Go REST API, PostgreSQL, Docker-based local development, explicit migrations, health checks, structured logging, graceful shutdown, pure-Go food models, and the initial food schema. Food repositories, provider integrations, search, meals, and nutrition calculations are intentionally not implemented yet.
 
 ## Prerequisites
 
@@ -69,7 +69,25 @@ docker compose run --rm migrate up
 docker compose run --rm migrate down 1
 ```
 
-The initial no-op migration verifies the migration lifecycle and creates only `golang-migrate`'s version metadata. It does not create food, meal, or other domain tables.
+The migrations are:
+
+- `000001_foundation`: verifies the migration lifecycle without creating domain objects.
+- `000002_food_domain`: creates canonical foods, per-100-gram nutrition, household portions, multilingual aliases, and external source references.
+
+The food migration is reversible. Removing one migration version drops only the Phase 2 domain tables and leaves the foundation migration applied.
+
+## Canonical food domain
+
+The pure-Go models live in `internal/domain/food` and do not depend on PostgreSQL, HTTP models, or external provider DTOs.
+
+- A `Food` has an internal identity, canonical name, and optional brand.
+- `Nutrition` uses one canonical basis: calories in kcal/100 g and macros in g/100 g.
+- An unavailable nutrient is distinct from a known zero in both Go and PostgreSQL.
+- A `Portion` maps an amount and free-form household measure such as `slice` or `cup, chopped` to grams.
+- A `FoodAlias` may carry a nullable language tag; language-aware resolution remains future work.
+- An `ExternalFoodReference` associates a canonical food with a string identifier owned by a `FoodSource`, currently `usda` or `open_food_facts`.
+
+Persisted nutrition and portion amounts use `NUMERIC(12,4)`. Internal IDs use PostgreSQL `BIGINT GENERATED ALWAYS AS IDENTITY`. Deleting a canonical food cascades to its nutrition, portions, aliases, and external references.
 
 ## Local Go workflow
 
@@ -94,6 +112,7 @@ make verify
 ```text
 cmd/api/                    process composition and lifecycle
 internal/config/            environment loading and validation
+internal/domain/food/       canonical food domain vocabulary and invariants
 internal/httpapi/           routes, middleware, and HTTP server configuration
 internal/platform/database/ PostgreSQL pool construction
 migrations/                 versioned schema changes
@@ -106,9 +125,11 @@ The structure leaves room for feature-oriented domain and application packages i
 - Standard-library `net/http` and `log/slog` keep the foundation small while providing production-relevant server controls and structured JSON logs.
 - `pgxpool` owns PostgreSQL connections. Startup verifies connectivity; readiness continues to reflect database availability while liveness remains independent.
 - Migrations are an explicit operational step. API replicas therefore cannot race to mutate the schema during startup, and rollbacks remain deliberate.
+- The food domain uses fixed MVP nutrition fields rather than generic nutrient rows. This keeps missing-versus-zero semantics explicit without introducing a nutrient catalog before it is needed.
+- External source identifiers are separate from canonical food IDs, so future USDA and Open Food Facts adapters can map their DTOs into the same domain.
 - The process listens only after configuration and PostgreSQL are valid. On `SIGINT` or `SIGTERM`, HTTP traffic drains before the pool closes.
 - Docker Compose waits for PostgreSQL's health check and uses a named volume. PostgreSQL 18's volume is mounted at `/var/lib/postgresql`, matching the image's major-version-aware data layout.
 
-## Phase 1 boundaries
+## Current boundaries
 
-This phase does not include food or meal models, nutrition providers, AI/LLM integration, authentication, caching, queues, WebSockets, or mobile changes.
+The current implementation does not include repository CRUD, USDA or Open Food Facts clients/adapters, food search or ranking, portion/nutrition calculation engines, meals, AI/LLM integration, authentication, caching, queues, WebSockets, or mobile changes.

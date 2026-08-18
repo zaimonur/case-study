@@ -3,7 +3,7 @@ package httpapi
 import (
 	"net/http"
 
-	"eatbetter-backend/internal/config"
+	"github.com/zaimonur/case-study/case-study-eatbetter-backend/internal/config"
 )
 
 // NewServer configures the API's HTTP server and defensive timeouts.

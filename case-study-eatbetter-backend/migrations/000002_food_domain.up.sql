@@ -18,6 +18,10 @@ CREATE TABLE food_nutrition (
     fat_per_100g NUMERIC(12, 4),
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT food_nutrition_calories_not_nan CHECK (calories_per_100g IS NULL OR calories_per_100g <> 'NaN'::numeric),
+    CONSTRAINT food_nutrition_protein_not_nan CHECK (protein_per_100g IS NULL OR protein_per_100g <> 'NaN'::numeric),
+    CONSTRAINT food_nutrition_carbohydrates_not_nan CHECK (carbohydrates_per_100g IS NULL OR carbohydrates_per_100g <> 'NaN'::numeric),
+    CONSTRAINT food_nutrition_fat_not_nan CHECK (fat_per_100g IS NULL OR fat_per_100g <> 'NaN'::numeric),
     CONSTRAINT food_nutrition_calories_non_negative CHECK (calories_per_100g IS NULL OR calories_per_100g >= 0),
     CONSTRAINT food_nutrition_protein_non_negative CHECK (protein_per_100g IS NULL OR protein_per_100g >= 0),
     CONSTRAINT food_nutrition_carbohydrates_non_negative CHECK (carbohydrates_per_100g IS NULL OR carbohydrates_per_100g >= 0),
@@ -38,8 +42,10 @@ CREATE TABLE food_portions (
     grams NUMERIC(12, 4) NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT food_portions_amount_not_nan CHECK (amount <> 'NaN'::numeric),
     CONSTRAINT food_portions_amount_positive CHECK (amount > 0),
     CONSTRAINT food_portions_measure_not_blank CHECK (btrim(measure) <> ''),
+    CONSTRAINT food_portions_grams_not_nan CHECK (grams <> 'NaN'::numeric),
     CONSTRAINT food_portions_grams_positive CHECK (grams > 0),
     CONSTRAINT food_portions_exact_value_unique UNIQUE (food_id, amount, measure, grams)
 );

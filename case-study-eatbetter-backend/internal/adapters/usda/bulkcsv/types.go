@@ -5,6 +5,7 @@ import (
 	"math"
 	"strconv"
 	"strings"
+	"time"
 
 	appimport "github.com/zaimonur/case-study/case-study-eatbetter-backend/internal/application/foodimport"
 )
@@ -157,15 +158,11 @@ func parseDate(raw, field string, optional bool) (int32, error) {
 	if raw == "" && optional {
 		return 0, nil
 	}
-	if len(raw) != len("2006-01-02") || raw[4] != '-' || raw[7] != '-' {
-		return 0, fmt.Errorf("%s must use YYYY-MM-DD, got %q", field, raw)
-	}
-	compact := raw[:4] + raw[5:7] + raw[8:]
-	value, err := strconv.ParseInt(compact, 10, 32)
+	value, err := time.Parse("2006-01-02", raw)
 	if err != nil {
-		return 0, fmt.Errorf("parse %s %q: %w", field, raw, err)
+		return 0, fmt.Errorf("%s must be a valid YYYY-MM-DD calendar date, got %q: %w", field, raw, err)
 	}
-	return int32(value), nil
+	return int32(value.Year()*10_000 + int(value.Month())*100 + value.Day()), nil
 }
 
 func parseFinite(raw, field string) (float64, error) {

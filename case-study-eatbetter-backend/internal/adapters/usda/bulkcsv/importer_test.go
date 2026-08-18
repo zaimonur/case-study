@@ -220,6 +220,28 @@ func TestVersionKeyOrderAndPayloadEquality(t *testing.T) {
 	}
 }
 
+func TestParseDateValidatesCalendarDate(t *testing.T) {
+	t.Parallel()
+
+	for _, raw := range []string{"2026-13-01", "2026-04-31", "2025-02-29"} {
+		raw := raw
+		t.Run(raw, func(t *testing.T) {
+			t.Parallel()
+			if _, err := parseDate(raw, "test.date", false); err == nil {
+				t.Fatalf("parseDate(%q) error = nil, want invalid calendar date error", raw)
+			}
+		})
+	}
+
+	value, err := parseDate("2024-02-29", "test.date", false)
+	if err != nil {
+		t.Fatalf("parseDate(valid leap day) error = %v", err)
+	}
+	if value != 20240229 {
+		t.Fatalf("parseDate(valid leap day) = %d, want 20240229", value)
+	}
+}
+
 func TestHeaderValidationFailsClosed(t *testing.T) {
 	t.Parallel()
 

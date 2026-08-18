@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"eatbetter-backend/internal/config"
+	"github.com/zaimonur/case-study/case-study-eatbetter-backend/internal/config"
 )
 
 func TestOpenDoesNotExposeInvalidDatabaseURL(t *testing.T) {

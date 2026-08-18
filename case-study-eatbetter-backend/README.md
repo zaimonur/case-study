@@ -1,6 +1,6 @@
 # EatBetter Backend
 
-The EatBetter backend currently includes the Phase 1 runtime foundation and the Phase 2 canonical food domain foundation. It provides a Go REST API, PostgreSQL, Docker-based local development, explicit migrations, health checks, structured logging, graceful shutdown, pure-Go food models, and the initial food schema. Food repositories, provider integrations, search, meals, and nutrition calculations are intentionally not implemented yet.
+The EatBetter backend includes the Phase 1 runtime foundation, the Phase 2 canonical food domain, and the Phase 3B USDA FoodData Central bulk importer. It provides a Go REST API, PostgreSQL, Docker-based local development, explicit migrations, health checks, structured logging, graceful shutdown, pure-Go food models, and a bounded-memory import path. Search, meals, nutrition calculations, USDA HTTP API access, and mobile changes are intentionally not implemented yet.
 
 ## Prerequisites
 
@@ -73,6 +73,7 @@ The migrations are:
 
 - `000001_foundation`: verifies the migration lifecycle without creating domain objects.
 - `000002_food_domain`: creates canonical foods, per-100-gram nutrition, household portions, multilingual aliases, and external source references.
+- `000003_food_identifiers`: adds provider-neutral stable product identifiers, initially the `gtin_upc` scheme.
 
 The food migration is reversible. Removing one migration version drops only the Phase 2 domain tables and leaves the foundation migration applied.
 
@@ -86,6 +87,7 @@ The pure-Go models live in `internal/domain/food` and do not depend on PostgreSQ
 - A `Portion` maps an amount and free-form household measure such as `slice` or `cup, chopped` to grams.
 - A `FoodAlias` may carry a nullable language tag; language-aware resolution remains future work.
 - An `ExternalFoodReference` associates a canonical food with a string identifier owned by a `FoodSource`, currently `usda` or `open_food_facts`.
+- A `FoodIdentifier` associates stable retail identity with a food. GTIN/UPC values remain text, including leading zeroes.
 
 Persisted nutrition and portion amounts use `NUMERIC(12,4)`. Internal IDs use PostgreSQL `BIGINT GENERATED ALWAYS AS IDENTITY`. Deleting a canonical food cascades to its nutrition, portions, aliases, and external references.
 
@@ -107,14 +109,36 @@ make build
 make verify
 ```
 
+## USDA FoodData Central bulk import
+
+Apply all migrations, then point the standalone importer at an extracted USDA full CSV download:
+
+```sh
+DATABASE_URL='postgres://eatbetter:eatbetter@localhost:5432/eatbetter?sslmode=disable' \
+  go run ./cmd/usda-import \
+  --dataset-dir "$HOME/Desktop/FoodData_Central_csv_2026-04-30" \
+  --dataset-date 2026-04-30
+```
+
+The importer validates exact required CSV headers and canonical nutrient dictionary tuples before opening its write transaction. It streams source CSV rows, keeps only candidate identity/nutrient state in memory, writes canonical-shaped temporary tables with PostgreSQL `COPY`, and atomically merges them under an advisory lock. It does not create a persistent raw USDA mirror.
+
+For branded foods, exact source GTIN/UPC text is the stable canonical identity. The selected latest USDA version updates the canonical payload while every observed USDA FDC ID is retained as a historical `external_food_refs` relationship under the same food. Generic Foundation, FNDDS, and SR Legacy foods use FDC ID identity. Missing nutrients remain `NULL`, while a source value of zero remains a known zero.
+
+FNDDS portion descriptions are retained verbatim as source-native free-form measure phrases with `Amount=1`; they are deliberately not parsed. Branded servings become portions only when USDA supplies a positive serving size with the literal `g` unit. No density or `ml`-to-gram conversion is attempted.
+
+Provider CSV DTOs live in `internal/adapters/usda/bulkcsv`, mapping/orchestration contracts live in `internal/application/foodimport`, and canonical domain types remain provider-neutral. A future USDA HTTP adapter can therefore produce the same application import records without coupling the domain to CSV layout.
+
 ## Project structure
 
 ```text
 cmd/api/                    process composition and lifecycle
+cmd/usda-import/            USDA bulk import executable
+internal/adapters/usda/     provider-specific streaming CSV adapter
+internal/application/       provider-neutral import orchestration contracts
 internal/config/            environment loading and validation
 internal/domain/food/       canonical food domain vocabulary and invariants
 internal/httpapi/           routes, middleware, and HTTP server configuration
-internal/platform/database/ PostgreSQL pool construction
+internal/platform/database/ PostgreSQL pool and transactional import persistence
 migrations/                 versioned schema changes
 ```
 
@@ -132,4 +156,4 @@ The structure leaves room for feature-oriented domain and application packages i
 
 ## Current boundaries
 
-The current implementation does not include repository CRUD, USDA or Open Food Facts clients/adapters, food search or ranking, portion/nutrition calculation engines, meals, AI/LLM integration, authentication, caching, queues, WebSockets, or mobile changes.
+The current implementation does not include repository CRUD, USDA HTTP API or Open Food Facts adapters, food search or ranking, portion/nutrition calculation engines, meals, AI/LLM integration, authentication, caching, queues, WebSockets, or mobile changes.

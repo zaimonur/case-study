@@ -211,3 +211,26 @@ func TestNewExternalFoodReferenceRejectsInvalidValues(t *testing.T) {
 		t.Fatal("NewExternalFoodReference() error = nil, want external ID validation error")
 	}
 }
+
+func TestNewFoodIdentifierPreservesGTINLeadingZeroes(t *testing.T) {
+	t.Parallel()
+
+	identifier, err := NewFoodIdentifier(12, IdentifierSchemeGTINUPC, "  00027000612323  ")
+	if err != nil {
+		t.Fatalf("NewFoodIdentifier() error = %v", err)
+	}
+	if identifier.FoodID != 12 || identifier.Scheme != IdentifierSchemeGTINUPC || identifier.Value != "00027000612323" {
+		t.Fatalf("unexpected identifier: %+v", identifier)
+	}
+}
+
+func TestNewFoodIdentifierRejectsInvalidValues(t *testing.T) {
+	t.Parallel()
+
+	if _, err := NewFoodIdentifier(1, IdentifierScheme("other"), "123"); err == nil {
+		t.Fatal("NewFoodIdentifier() error = nil, want scheme validation error")
+	}
+	if _, err := NewFoodIdentifier(1, IdentifierSchemeGTINUPC, "  "); err == nil {
+		t.Fatal("NewFoodIdentifier() error = nil, want value validation error")
+	}
+}

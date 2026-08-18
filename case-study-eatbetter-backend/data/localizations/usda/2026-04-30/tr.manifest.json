@@ -1,0 +1,150 @@
+{
+  "format_version": "eatbetter-food-localizations-v1",
+  "dataset_date": "2026-04-30",
+  "locale": "tr",
+  "ruleset_version": "tr-usda-v1",
+  "artifact_sha256": "a1a131b663216910a63ca78b2e78647d2780420db53454c6d3f442e77f2ba619",
+  "eligible": 13652,
+  "localized": 339,
+  "review_required": 6376,
+  "untranslated": 6937,
+  "coverage_percent": 2.4831526516261353,
+  "input_files": [
+    {
+      "name": "food.csv",
+      "sha256": "5ed40e3fcd62cba188a9986dd550448e5f17ceadf5115c0ad49404faa054e88e"
+    },
+    {
+      "name": "food_nutrient.csv",
+      "sha256": "581cf96381ee1bf4f155f1e9268eb69ea85592de7ef2a9e3da78f71754069357"
+    },
+    {
+      "name": "nutrient.csv",
+      "sha256": "226ba937d1a73e8c87bd7fdcdd577524699bef4025c9232ee474b7d3083498ff"
+    }
+  ],
+  "data_type_counts": [
+    {
+      "name": "foundation_food",
+      "count": 428
+    },
+    {
+      "name": "sr_legacy_food",
+      "count": 7793
+    },
+    {
+      "name": "survey_fndds_food",
+      "count": 5431
+    }
+  ],
+  "status_counts": [
+    {
+      "name": "localized",
+      "count": 339
+    },
+    {
+      "name": "review_required",
+      "count": 6376
+    },
+    {
+      "name": "untranslated",
+      "count": 6937
+    }
+  ],
+  "status_by_data_type": [
+    {
+      "data_type": "foundation_food",
+      "status": "localized",
+      "count": 49
+    },
+    {
+      "data_type": "foundation_food",
+      "status": "review_required",
+      "count": 122
+    },
+    {
+      "data_type": "foundation_food",
+      "status": "untranslated",
+      "count": 257
+    },
+    {
+      "data_type": "sr_legacy_food",
+      "status": "localized",
+      "count": 214
+    },
+    {
+      "data_type": "sr_legacy_food",
+      "status": "review_required",
+      "count": 4360
+    },
+    {
+      "data_type": "sr_legacy_food",
+      "status": "untranslated",
+      "count": 3219
+    },
+    {
+      "data_type": "survey_fndds_food",
+      "status": "localized",
+      "count": 76
+    },
+    {
+      "data_type": "survey_fndds_food",
+      "status": "review_required",
+      "count": 1894
+    },
+    {
+      "data_type": "survey_fndds_food",
+      "status": "untranslated",
+      "count": 3461
+    }
+  ],
+  "rule_counts": [
+    {
+      "name": "tr.alias.explicit.v1",
+      "count": 7
+    },
+    {
+      "name": "tr.family.exact.v1",
+      "count": 339
+    },
+    {
+      "name": "tr.family.qualifier.v1",
+      "count": 19
+    },
+    {
+      "name": "tr.modifier.exact.v1",
+      "count": 334
+    },
+    {
+      "name": "tr.render.catalog-order.v1",
+      "count": 339
+    }
+  ],
+  "reason_counts": [
+    {
+      "name": "ambiguous_source",
+      "count": 3280
+    },
+    {
+      "name": "compound_description",
+      "count": 1148
+    },
+    {
+      "name": "numeric_or_grade_qualifier",
+      "count": 1546
+    },
+    {
+      "name": "unknown_clause",
+      "count": 993
+    },
+    {
+      "name": "unknown_food_family",
+      "count": 5944
+    },
+    {
+      "name": "unsupported_animal_or_cut",
+      "count": 1122
+    }
+  ],
+  "localized_aliases": 7
+}

@@ -179,7 +179,9 @@ SELECT staged.external_id
 FROM tmp_food_localizations AS staged
 JOIN external_food_refs AS refs
   ON refs.source = staged.source AND refs.external_id = staged.external_id
-JOIN food_identifiers AS identifiers ON identifiers.food_id = refs.food_id
+JOIN food_identifiers AS identifiers
+  ON identifiers.food_id = refs.food_id
+  AND identifiers.scheme = 'gtin_upc'
 ORDER BY staged.external_id
 LIMIT 1
 `

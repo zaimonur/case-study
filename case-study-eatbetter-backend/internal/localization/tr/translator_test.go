@@ -25,6 +25,12 @@ func TestTranslatorLocalizesOnlyFullyConsumedSafeNames(t *testing.T) {
 		{"flour qualifier", "Flour, wheat, all-purpose, enriched, unbleached", "Çok amaçlı, zenginleştirilmiş, ağartılmamış buğday unu"},
 		{"tea qualifier", "Tea, iced, brewed, green, decaffeinated, unsweetened", "Kafeinsiz, şekersiz demlenmiş soğuk yeşil çay"},
 		{"potato preparation", "Potato, baked, peel not eaten, no added fat", "Kabuğu yenmeden, yağ eklenmemiş fırında pişmiş patates"},
+		{"greens cooked with oil", "Collards, fresh, cooked with oil", "Taze, yağla pişirilmiş kara lahana"},
+		{"potato chip shape and flavor", "Potato chips, ruffled, sour cream and onion flavored", "Ekşi krema ve soğan aromalı tırtıklı patates cipsi"},
+		{"frozen coffee modifiers", "Frozen coffee drink, decaffeinated, nonfat, with whipped cream", "Kafeinsiz, yağsız, krem şantili dondurulmuş kahve içeceği"},
+		{"soft drink subtype", "Soft drink, cola, decaffeinated, diet", "Kafeinsiz, diyet kola"},
+		{"compound roll subtype", "Roll, sweet, cinnamon bun, frosted", "Üzeri şeker kaplamalı tarçınlı tatlı küçük ekmek"},
+		{"waffle identity and flavor", "Waffle, whole grain, fruit, frozen", "Meyveli, dondurulmuş tam tahıllı waffle"},
 	}
 	translator := Translator{}
 	for _, test := range tests {
@@ -53,6 +59,7 @@ func TestTranslatorFailsClosed(t *testing.T) {
 		{"Eggs, Grade A, Large, egg white", app.StatusReviewRequired, reasonNumeric},
 		{"Broccoli, mystery preparation", app.StatusUntranslated, reasonUnknownClause},
 		{"Bread, mystery preparation", app.StatusUntranslated, reasonUnknownClause},
+		{"Soft drink, pepper type", app.StatusUntranslated, reasonUnknownClause},
 		{"Unmapped family, raw", app.StatusUntranslated, reasonUnknownFamily},
 	}
 	translator := Translator{}

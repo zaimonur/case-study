@@ -2,13 +2,13 @@
   "format_version": "eatbetter-food-localizations-v1",
   "dataset_date": "2026-04-30",
   "locale": "tr",
-  "ruleset_version": "tr-usda-v2",
-  "artifact_sha256": "22f2fe298050aac4fc1b6c7ef38fa6af618b411c4352eddb3689c8c1ec974c11",
+  "ruleset_version": "tr-usda-v3",
+  "artifact_sha256": "55de0d426f38a6e8a306405a79f0ab5e4154c6785dd982992ebe72652495e78d",
   "eligible": 13652,
-  "localized": 1350,
+  "localized": 1895,
   "review_required": 6379,
-  "untranslated": 5923,
-  "coverage_percent": 9.888661002050982,
+  "untranslated": 5378,
+  "coverage_percent": 13.880750073249342,
   "input_files": [
     {
       "name": "food.csv",
@@ -40,7 +40,7 @@
   "status_counts": [
     {
       "name": "localized",
-      "count": 1350
+      "count": 1895
     },
     {
       "name": "review_required",
@@ -48,14 +48,14 @@
     },
     {
       "name": "untranslated",
-      "count": 5923
+      "count": 5378
     }
   ],
   "status_by_data_type": [
     {
       "data_type": "foundation_food",
       "status": "localized",
-      "count": 129
+      "count": 142
     },
     {
       "data_type": "foundation_food",
@@ -65,12 +65,12 @@
     {
       "data_type": "foundation_food",
       "status": "untranslated",
-      "count": 174
+      "count": 161
     },
     {
       "data_type": "sr_legacy_food",
       "status": "localized",
-      "count": 704
+      "count": 912
     },
     {
       "data_type": "sr_legacy_food",
@@ -80,12 +80,12 @@
     {
       "data_type": "sr_legacy_food",
       "status": "untranslated",
-      "count": 2729
+      "count": 2521
     },
     {
       "data_type": "survey_fndds_food",
       "status": "localized",
-      "count": 517
+      "count": 841
     },
     {
       "data_type": "survey_fndds_food",
@@ -95,7 +95,7 @@
     {
       "data_type": "survey_fndds_food",
       "status": "untranslated",
-      "count": 3020
+      "count": 2696
     }
   ],
   "rule_counts": [
@@ -105,19 +105,19 @@
     },
     {
       "name": "tr.family.exact.v1",
-      "count": 1350
+      "count": 1895
     },
     {
       "name": "tr.family.qualifier.v1",
-      "count": 735
+      "count": 1018
     },
     {
       "name": "tr.modifier.exact.v1",
-      "count": 1135
+      "count": 1566
     },
     {
       "name": "tr.render.turkish-noun-phrase.v2",
-      "count": 1350
+      "count": 1895
     }
   ],
   "reason_counts": [
@@ -135,11 +135,11 @@
     },
     {
       "name": "unknown_clause",
-      "count": 1121
+      "count": 946
     },
     {
       "name": "unknown_food_family",
-      "count": 4802
+      "count": 4432
     },
     {
       "name": "unsupported_animal_or_cut",

@@ -148,6 +148,13 @@ func TestLoaderRejectsBrandedFood(t *testing.T) {
 	}
 }
 
+func TestBrandedFoodSQLScopesIdentifiersToGTINUPC(t *testing.T) {
+	t.Parallel()
+	if !strings.Contains(brandedFoodSQL, "identifiers.scheme = 'gtin_upc'") {
+		t.Fatal("branded food validation must only consider GTIN/UPC identifiers")
+	}
+}
+
 func TestLoaderReplacesAndRemovesAliasesWithoutReplacingLocalization(t *testing.T) {
 	databaseURL := os.Getenv("TEST_DATABASE_URL")
 	if databaseURL == "" {

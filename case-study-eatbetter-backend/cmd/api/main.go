@@ -10,9 +10,11 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/zaimonur/case-study/case-study-eatbetter-backend/internal/application/foodsearch"
 	"github.com/zaimonur/case-study/case-study-eatbetter-backend/internal/config"
 	"github.com/zaimonur/case-study/case-study-eatbetter-backend/internal/httpapi"
 	"github.com/zaimonur/case-study/case-study-eatbetter-backend/internal/platform/database"
+	dbfoodsearch "github.com/zaimonur/case-study/case-study-eatbetter-backend/internal/platform/database/foodsearch"
 )
 
 func main() {
@@ -44,7 +46,8 @@ func run() error {
 	defer pool.Close()
 	logger.Info("database connection established")
 
-	handler := httpapi.NewRouter(logger, cfg.Database.PingTimeout, pool.Ping)
+	foodSearchService := foodsearch.NewService(dbfoodsearch.New(pool))
+	handler := httpapi.NewRouter(logger, cfg.Database.PingTimeout, pool.Ping, foodSearchService)
 	server := httpapi.NewServer(cfg.HTTP, handler)
 	serverErrors := make(chan error, 1)
 

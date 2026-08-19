@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/zaimonur/case-study/case-study-eatbetter-backend/internal/application/foodsearch"
 )
 
 func TestHealthDoesNotDependOnDatabase(t *testing.T) {
@@ -20,7 +22,7 @@ func TestHealthDoesNotDependOnDatabase(t *testing.T) {
 	router := NewRouter(discardLogger(), time.Second, func(context.Context) error {
 		pingCalled = true
 		return errors.New("database unavailable")
-	})
+	}, &stubFoodSearcher{})
 
 	response := performRequest(router, http.MethodGet, "/health")
 	if response.Code != http.StatusOK {
@@ -62,7 +64,7 @@ func TestReadinessReportsDatabaseState(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			router := NewRouter(discardLogger(), time.Second, tt.ping)
+			router := NewRouter(discardLogger(), time.Second, tt.ping, &stubFoodSearcher{})
 			response := performRequest(router, http.MethodGet, "/ready")
 			if response.Code != tt.wantStatus {
 				t.Fatalf("status = %d, want %d", response.Code, tt.wantStatus)
@@ -81,7 +83,7 @@ func TestReadinessAppliesTimeout(t *testing.T) {
 	router := NewRouter(discardLogger(), 5*time.Millisecond, func(ctx context.Context) error {
 		<-ctx.Done()
 		return ctx.Err()
-	})
+	}, &stubFoodSearcher{})
 
 	response := performRequest(router, http.MethodGet, "/ready")
 	if response.Code != http.StatusServiceUnavailable {
@@ -92,7 +94,7 @@ func TestReadinessAppliesTimeout(t *testing.T) {
 func TestHealthEndpointsRejectOtherMethods(t *testing.T) {
 	t.Parallel()
 
-	router := NewRouter(discardLogger(), time.Second, func(context.Context) error { return nil })
+	router := NewRouter(discardLogger(), time.Second, func(context.Context) error { return nil }, &stubFoodSearcher{})
 	for _, path := range []string{"/health", "/ready"} {
 		response := performRequest(router, http.MethodPost, path)
 		if response.Code != http.StatusMethodNotAllowed {
@@ -110,7 +112,7 @@ func TestRequestMiddlewareAddsIDAndLogsRequest(t *testing.T) {
 
 	var logs bytes.Buffer
 	logger := slog.New(slog.NewJSONHandler(&logs, nil))
-	router := NewRouter(logger, time.Second, func(context.Context) error { return nil })
+	router := NewRouter(logger, time.Second, func(context.Context) error { return nil }, &stubFoodSearcher{})
 
 	response := performRequest(router, http.MethodGet, "/health")
 	requestID := response.Header().Get(requestIDHeader)
@@ -141,6 +143,107 @@ func TestRecoveryMiddlewareReturnsGenericError(t *testing.T) {
 	if response.Header().Get(requestIDHeader) == "" {
 		t.Fatal("response is missing X-Request-ID")
 	}
+}
+
+func TestFoodSearchReturnsSmallStableResponse(t *testing.T) {
+	t.Parallel()
+	brand := "Example Brand"
+	search := &stubFoodSearcher{candidates: []foodsearch.FoodCandidate{{
+		FoodID: 42, CanonicalName: "Milk, whole", DisplayName: "Tam yağlı süt", Brand: &brand,
+		Match: foodsearch.MatchMetadata{Similarity: 0.99},
+	}}}
+	router := NewRouter(discardLogger(), time.Second, func(context.Context) error { return nil }, search)
+
+	response := performRequest(router, http.MethodGet, "/foods/search?q=s%C3%BCt&locale=tr-TR&limit=5")
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", response.Code, response.Body.String())
+	}
+	want := "{\"items\":[{\"food_id\":42,\"display_name\":\"Tam yağlı süt\",\"canonical_name\":\"Milk, whole\",\"brand\":\"Example Brand\"}]}\n"
+	if response.Body.String() != want {
+		t.Fatalf("body = %q, want %q", response.Body.String(), want)
+	}
+	if search.request.Query != "süt" || search.request.Locale != "tr-TR" || search.request.Limit != 5 || !search.request.LimitSet {
+		t.Fatalf("application request = %+v", search.request)
+	}
+	assertJSONResponse(t, response)
+}
+
+func TestFoodSearchValidation(t *testing.T) {
+	t.Parallel()
+	service := foodsearch.NewService(&httpSearchRepository{})
+	router := NewRouter(discardLogger(), time.Second, func(context.Context) error { return nil }, service)
+	tests := []string{
+		"/foods/search",
+		"/foods/search?q=",
+		"/foods/search?q=%20%20",
+		"/foods/search?q=a",
+		"/foods/search?q=" + strings.Repeat("a", 121),
+		"/foods/search?q=milk&limit=wat",
+		"/foods/search?q=milk&limit=",
+		"/foods/search?q=milk&limit=0",
+		"/foods/search?q=milk&limit=-1",
+		"/foods/search?q=milk&limit=21",
+		"/foods/search?q=milk&locale=tr_TR",
+	}
+	for _, path := range tests {
+		response := performRequest(router, http.MethodGet, path)
+		if response.Code != http.StatusBadRequest {
+			t.Errorf("GET %s status = %d, want 400", path, response.Code)
+		}
+		if response.Body.String() != "{\"status\":\"invalid_request\"}\n" {
+			t.Errorf("GET %s body = %q", path, response.Body.String())
+		}
+		assertJSONResponse(t, response)
+	}
+}
+
+func TestFoodSearchValidUnsupportedLocaleAndEmptyResult(t *testing.T) {
+	t.Parallel()
+	service := foodsearch.NewService(&httpSearchRepository{})
+	router := NewRouter(discardLogger(), time.Second, func(context.Context) error { return nil }, service)
+	response := performRequest(router, http.MethodGet, "/foods/search?q=milch&locale=de-DE")
+	if response.Code != http.StatusOK || response.Body.String() != "{\"items\":[]}\n" {
+		t.Fatalf("response = %d %q", response.Code, response.Body.String())
+	}
+}
+
+func TestFoodSearchRejectsOtherMethods(t *testing.T) {
+	t.Parallel()
+	router := NewRouter(discardLogger(), time.Second, func(context.Context) error { return nil }, &stubFoodSearcher{})
+	response := performRequest(router, http.MethodPost, "/foods/search?q=milk")
+	if response.Code != http.StatusMethodNotAllowed || response.Header().Get("Allow") != http.MethodGet {
+		t.Fatalf("response = %d Allow=%q", response.Code, response.Header().Get("Allow"))
+	}
+}
+
+func TestFoodSearchFailureDoesNotLeakDatabaseDetails(t *testing.T) {
+	t.Parallel()
+	search := &stubFoodSearcher{err: errors.New("postgres password=secret relation foods")}
+	router := NewRouter(discardLogger(), time.Second, func(context.Context) error { return nil }, search)
+	response := performRequest(router, http.MethodGet, "/foods/search?q=milk")
+	if response.Code != http.StatusInternalServerError || response.Body.String() != "{\"status\":\"internal_error\"}\n" {
+		t.Fatalf("response = %d %q", response.Code, response.Body.String())
+	}
+	if strings.Contains(response.Body.String(), "postgres") || strings.Contains(response.Body.String(), "secret") {
+		t.Fatal("response leaked database error")
+	}
+}
+
+type stubFoodSearcher struct {
+	request    foodsearch.Request
+	candidates []foodsearch.FoodCandidate
+	err        error
+}
+
+func (s *stubFoodSearcher) Search(_ context.Context, request foodsearch.Request) ([]foodsearch.FoodCandidate, error) {
+	s.request = request
+	return s.candidates, s.err
+}
+
+type httpSearchRepository struct{}
+
+func (*httpSearchRepository) Search(context.Context, foodsearch.Query) ([]foodsearch.FoodCandidate, error) {
+	return []foodsearch.FoodCandidate{}, nil
 }
 
 func performRequest(handler http.Handler, method, path string) *httptest.ResponseRecorder {

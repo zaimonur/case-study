@@ -1,6 +1,6 @@
 # EatBetter Backend
 
-The EatBetter backend includes the Phase 1 runtime foundation, the Phase 2 canonical food domain, and the Phase 3B USDA FoodData Central bulk importer. It provides a Go REST API, PostgreSQL, Docker-based local development, explicit migrations, health checks, structured logging, graceful shutdown, pure-Go food models, and a bounded-memory import path. Search, meals, nutrition calculations, USDA HTTP API access, and mobile changes are intentionally not implemented yet.
+The EatBetter backend includes the Phase 1 runtime foundation, canonical food domain, USDA FoodData Central bulk importer, deterministic Turkish localization, and Phase 5 multilingual canonical-food search. It provides a Go REST API, PostgreSQL, Docker-based local development, explicit migrations, health checks, structured logging, graceful shutdown, pure-Go food models, and a bounded-memory import path. Search returns candidates rather than automatically selecting a food; meals, nutrition calculations, USDA HTTP API access, and mobile changes remain outside the current scope.
 
 ## Prerequisites
 
@@ -32,6 +32,16 @@ The API is available at `http://localhost:8080` by default.
 | `GET /ready` | Traffic readiness | `200 {"status":"ready"}` | `503 {"status":"not_ready"}` when PostgreSQL cannot be reached within the configured timeout |
 
 Every handled request receives an `X-Request-ID` response header. Access logs are JSON and include request ID, method, path, status, and duration; request bodies and connection strings are not logged.
+
+## Food search
+
+`GET /foods/search?q=yumurta&locale=tr-TR&limit=10` returns an ordered list of canonical food candidates. `q` must contain 2–120 normalized Unicode characters. `limit` defaults to 10 and accepts 1–20. Locale is optional; `tr-TR` searches `tr-TR`, then `tr`, while any valid unsupported locale (for example `de-DE`) still searches and displays canonical data. Malformed input returns `400`, unsupported methods return `405` with `Allow: GET`, and a valid miss returns `200 {"items":[]}`.
+
+The primary normalized form uses NFC, Turkish-aware casing, collapsed whitespace, and safe punctuation separators while retaining `ç`, `ğ`, `ı`, `ö`, `ş`, and `ü`. A second folded form maps these to ASCII for tolerant input such as `sut` and `cig`; a primary-form match outranks an otherwise equivalent folded match.
+
+Retrieval is staged and SQL-bounded: exact first, prefix only when needed, then trigram fuzzy matching only when the requested set is still incomplete and the query has at least three characters. Ranking is lexicographic and deterministic: exact before prefix before fuzzy, primary before folded, localized display before canonical name before localization alias before food alias before brand, fuzzy similarity within the fuzzy tier, and canonical food ID as the final tie-breaker. Signals from multiple surfaces collapse to one `foods.id`; aliases never become identity.
+
+Turkish display names and localization aliases participate only when their locale is relevant and `food_localizations.source_canonical_name = foods.canonical_name`. A stale row therefore cannot retrieve a food or become its display name; the response falls back to `foods.canonical_name` without mutating localization data.
 
 ## Configuration
 
@@ -75,6 +85,7 @@ The migrations are:
 - `000002_food_domain`: creates canonical foods, per-100-gram nutrition, household portions, multilingual aliases, and external source references.
 - `000003_food_identifiers`: adds provider-neutral stable product identifiers, initially the `gtin_upc` scheme.
 - `000004_food_localizations`: adds locale-specific display names and their search-only aliases without changing canonical food data.
+- `000005_food_search`: adds immutable primary/folded normalization helpers plus measured B-tree exact and GIN `pg_trgm` prefix/fuzzy indexes over existing search surfaces.
 
 The food migration is reversible. Removing one migration version drops only the Phase 2 domain tables and leaves the foundation migration applied.
 
@@ -184,9 +195,20 @@ The structure leaves room for feature-oriented domain and application packages i
 - Migrations are an explicit operational step. API replicas therefore cannot race to mutate the schema during startup, and rollbacks remain deliberate.
 - The food domain uses fixed MVP nutrition fields rather than generic nutrient rows. This keeps missing-versus-zero semantics explicit without introducing a nutrient catalog before it is needed.
 - External source identifiers are separate from canonical food IDs, so future USDA and Open Food Facts adapters can map their DTOs into the same domain.
+- Food search queries existing normalized tables directly. It uses no denormalized mirror, cache, external search engine, vector store, embeddings, or runtime AI dependency.
 - The process listens only after configuration and PostgreSQL are valid. On `SIGINT` or `SIGTERM`, HTTP traffic drains before the pool closes.
 - Docker Compose waits for PostgreSQL's health check and uses a named volume. PostgreSQL 18's volume is mounted at `/var/lib/postgresql`, matching the image's major-version-aware data layout.
 
+## Search evaluation
+
+Run the deterministic 42-query mini evaluation against a populated catalog:
+
+```sh
+DATABASE_URL='postgres://...' go run ./cmd/food-search-eval -iterations 3
+```
+
+`-summary-only` emits compact metrics and `-failures-only` retains only notable misses. The checked April 2026 catalog measurements and query-plan observations are recorded in [`docs/phase5-search-evaluation.md`](docs/phase5-search-evaluation.md).
+
 ## Current boundaries
 
-The current implementation does not include repository CRUD, USDA HTTP API or Open Food Facts adapters, food search or ranking, localization resolution, portion/nutrition calculation engines, meals, AI/LLM integration, authentication, caching, queues, WebSockets, or mobile changes.
+The current implementation does not include repository CRUD, USDA HTTP API or Open Food Facts adapters, automatic semantic food selection, portion/nutrition calculation engines, meals, AI/LLM integration, authentication, caching, queues, WebSockets, or mobile changes.

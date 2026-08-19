@@ -21,8 +21,8 @@ func TestRepositoryStagesFuzzyOnlyWhenNeededAndNeverForShortQueries(t *testing.T
 		primary     string
 		wantQueries int
 	}{
-		{name: "short", primary: "zz", wantQueries: 2},
-		{name: "fuzzy eligible", primary: "zzz", wantQueries: 3},
+		{name: "short", primary: "zz", wantQueries: 3},
+		{name: "fuzzy eligible", primary: "zzz", wantQueries: 4},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -43,9 +43,10 @@ func TestRepositoryStagesFuzzyOnlyWhenNeededAndNeverForShortQueries(t *testing.T
 func TestRankingIsLexicographicAndDeterministic(t *testing.T) {
 	t.Parallel()
 	candidates := []app.FoodCandidate{
-		{FoodID: 5, Match: app.MatchMetadata{Class: app.MatchFuzzy, Form: app.FormPrimary, Source: app.SourceLocalizedDisplay, Similarity: 1}},
-		{FoodID: 4, Match: app.MatchMetadata{Class: app.MatchPrefix, Form: app.FormPrimary, Source: app.SourceLocalizedDisplay}},
-		{FoodID: 3, Match: app.MatchMetadata{Class: app.MatchExact, Form: app.FormFolded, Source: app.SourceLocalizedDisplay}},
+		{FoodID: 6, Match: app.MatchMetadata{Class: app.MatchFuzzy, Form: app.FormPrimary, Source: app.SourceLocalizedDisplay, Similarity: 1}},
+		{FoodID: 5, Match: app.MatchMetadata{Class: app.MatchPrefix, Form: app.FormPrimary, Source: app.SourceLocalizedDisplay}},
+		{FoodID: 4, Match: app.MatchMetadata{Class: app.MatchWord, Form: app.FormFolded, Source: app.SourceLocalizedDisplay}},
+		{FoodID: 3, Match: app.MatchMetadata{Class: app.MatchWord, Form: app.FormPrimary, Source: app.SourceLocalizedDisplay}},
 		{FoodID: 2, Match: app.MatchMetadata{Class: app.MatchExact, Form: app.FormPrimary, Source: app.SourceBrand}},
 		{FoodID: 1, Match: app.MatchMetadata{Class: app.MatchExact, Form: app.FormPrimary, Source: app.SourceLocalizedDisplay}},
 	}
@@ -94,12 +95,22 @@ func TestRepositoryIntegration(t *testing.T) {
 	}
 
 	assertFirst("süt", "tr-TR", ids["milk"], "Tam yağlı süt")
-	ascii := assertFirst("sut", "tr", ids["ascii"], "sut")
-	if len(ascii) < 2 || ascii[1].FoodID != ids["milk"] || ascii[0].Match.Form != app.FormPrimary || ascii[1].Match.Form != app.FormFolded {
-		t.Fatalf("ASCII Turkish ranking = %+v", ascii)
+	ascii := assertFirst("sut", "tr", ids["milk"], "Tam yağlı süt")
+	if ascii[0].Match.Class != app.MatchWord || ascii[0].Match.Form != app.FormFolded {
+		t.Fatalf("ASCII Turkish whole-word ranking = %+v", ascii)
 	}
+	assertWordBeforeSutter(t, assertFirst("süt", "tr", ids["milk"], "Tam yağlı süt"), ids)
+	assertWordBeforeSutter(t, ascii, ids)
 	assertFirst("inek sütü", "tr", ids["milk"], "Tam yağlı süt")
-	assertFirst("rice", "tr", ids["rice"], "Pirinç")
+	riceMatches := assertFirst("rice", "tr", ids["rice"], "Pirinç")
+	if len(riceMatches) < 2 || riceMatches[0].Match.Class != app.MatchExact || riceMatches[1].FoodID != ids["brown_rice"] || riceMatches[1].Match.Class != app.MatchWord {
+		t.Fatalf("exact/whole-word ranking = %+v", riceMatches)
+	}
+	for _, candidate := range riceMatches {
+		if candidate.FoodID == ids["price"] && candidate.Match.Class == app.MatchWord {
+			t.Fatalf("unsafe substring was treated as a whole word: %+v", candidate)
+		}
+	}
 	assertFirst("rice", "de-DE", ids["rice"], "Rice")
 	assertFirst("acme", "en-US", ids["branded"], "Crunchy Bread")
 	assertFirst("crunch", "en", ids["branded"], "Crunchy Bread")
@@ -171,11 +182,15 @@ func seedSearchFoods(t *testing.T, ctx context.Context, pool *pgxpool.Pool) map[
 	}
 
 	milk := insertFood("milk", "Milk, whole", nil)
-	localize(milk, "Tam yağlı süt", "Milk, whole", "süt", "inek sütü")
-	insertFood("ascii", "sut", nil)
+	localize(milk, "Tam yağlı süt", "Milk, whole", "inek sütü")
+	for index, name := range []string{"SUTTER HOME", "SUTTER BUTTES OLIVE OIL", "SUTTER HILL"} {
+		insertFood("sutter_"+string(rune('a'+index)), name, nil)
+	}
 	broccoli := insertFood("broccoli", "Broccoli, raw", nil)
 	localize(broccoli, "Çiğ brokoli", "Broccoli, raw", "brokoli")
 	rice := insertFood("rice", "Rice", nil)
+	insertFood("brown_rice", "Brown rice", nil)
+	insertFood("price", "Price cereal", nil)
 	localize(rice, "Pirinç", "Rice", "rice")
 	if _, err := pool.Exec(ctx, `INSERT INTO food_aliases (food_id, alias) VALUES ($1, 'rice')`, rice); err != nil {
 		t.Fatal(err)
@@ -186,6 +201,27 @@ func seedSearchFoods(t *testing.T, ctx context.Context, pool *pgxpool.Pool) map[
 	localize(stale, "Bayat süt", "Old canonical", "eski süt")
 	insertFood("milk_prefix", "Milk chocolate", nil)
 	return ids
+}
+
+func assertWordBeforeSutter(t *testing.T, candidates []app.FoodCandidate, ids map[string]int64) {
+	t.Helper()
+	if len(candidates) < 4 || candidates[0].FoodID != ids["milk"] || candidates[0].Match.Class != app.MatchWord {
+		t.Fatalf("milk whole-word result did not lead SUTTER prefixes: %+v", candidates)
+	}
+	for _, key := range []string{"sutter_a", "sutter_b", "sutter_c"} {
+		found := false
+		for _, candidate := range candidates[1:] {
+			if candidate.FoodID == ids[key] {
+				found = true
+				if candidate.Match.Class != app.MatchPrefix {
+					t.Fatalf("SUTTER candidate class = %v, want prefix: %+v", candidate.Match.Class, candidate)
+				}
+			}
+		}
+		if !found {
+			t.Fatalf("expected seeded %s candidate in bounded result: %+v", key, candidates)
+		}
+	}
 }
 
 type recordingQueryer struct {
@@ -211,7 +247,7 @@ func (*emptyRows) Conn() *pgx.Conn                              { return nil }
 
 func TestSQLUsesParametersAndBoundsEveryStage(t *testing.T) {
 	t.Parallel()
-	for name, statement := range map[string]string{"exact": exactSQL, "prefix": prefixSQL, "fuzzy": fuzzySQL} {
+	for name, statement := range map[string]string{"exact": exactSQL, "word": wordSQL, "prefix": prefixSQL, "fuzzy": fuzzySQL} {
 		if !strings.Contains(statement, "LIMIT $5") {
 			t.Errorf("%s query is not SQL-bounded", name)
 		}
@@ -247,8 +283,10 @@ func TestRealCatalogQueryPlans(t *testing.T) {
 		name, statement, primary, folded string
 	}{
 		{name: "exact", statement: exactSQL, primary: "milk", folded: "milk"},
+		{name: "word_turkish_folded", statement: wordSQL, primary: "süt", folded: "sut"},
 		{name: "prefix", statement: prefixSQL, primary: "brok", folded: "brok"},
 		{name: "fuzzy", statement: fuzzySQL, primary: "brocoli", folded: "brocoli"},
+		{name: "brand", statement: exactSQL, primary: "meijer", folded: "meijer"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -271,7 +309,23 @@ func TestRealCatalogQueryPlans(t *testing.T) {
 				t.Fatal(err)
 			}
 			plan := strings.Join(lines, "\n")
-			t.Logf("%s plan for %d foods:\n%s", test.name, catalogSize, plan)
+			executionTime := "execution time unavailable"
+			phase5IndexNodes := 0
+			sequentialScanNodes := 0
+			for _, line := range lines {
+				trimmed := strings.TrimSpace(line)
+				if strings.HasPrefix(trimmed, "Execution Time:") {
+					executionTime = trimmed
+				}
+				if strings.Contains(trimmed, "Index Scan") && strings.Contains(trimmed, "_search_") {
+					phase5IndexNodes++
+				}
+				if strings.Contains(trimmed, "Seq Scan on ") {
+					sequentialScanNodes++
+				}
+			}
+			t.Logf("%s plan for %d foods: %s; Phase 5 index nodes=%d; sequential scan nodes=%d",
+				test.name, catalogSize, executionTime, phase5IndexNodes, sequentialScanNodes)
 			if strings.Contains(plan, "Seq Scan on foods ") {
 				t.Fatalf("%s plan performs a full foods scan", test.name)
 			}

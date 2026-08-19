@@ -201,7 +201,7 @@ func evaluationCases() []evaluationCase {
 		{Category: "turkish", Query: "brokoli", Locale: "tr-TR", Expected: []string{"broccoli"}},
 		{Category: "turkish", Query: "buğday", Locale: "tr", Expected: []string{"wheat", "buckwheat"}},
 		{Category: "turkish", Query: "tavuk", Locale: "tr", Expected: []string{"chicken"}},
-		{Category: "turkish", Query: "elma", Locale: "tr", Expected: []string{"apple"}},
+		{Category: "turkish", Query: "elma", Locale: "tr", Expected: []string{"apple", "elma"}},
 		{Category: "turkish", Query: "yoğurt", Locale: "tr", Expected: []string{"yogurt"}},
 		{Category: "ascii_turkish", Query: "sut", Locale: "tr-TR", Expected: []string{"milk", "süt"}},
 		{Category: "ascii_turkish", Query: "cig", Locale: "tr-TR", Expected: []string{"raw", "çiğ"}},

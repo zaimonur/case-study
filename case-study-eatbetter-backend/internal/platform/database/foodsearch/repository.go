@@ -29,7 +29,7 @@ func New(database queryer) *Repository {
 	return &Repository{database: database}
 }
 
-// Search executes exact, then prefix, then (when necessary) fuzzy retrieval.
+// Search executes exact, whole-word, prefix, then (when necessary) fuzzy retrieval.
 func (r *Repository) Search(ctx context.Context, query app.Query) ([]app.FoodCandidate, error) {
 	cap := query.Limit * stageCapFactor
 	if cap < minimumStageCap {
@@ -39,6 +39,11 @@ func (r *Repository) Search(ctx context.Context, query app.Query) ([]app.FoodCan
 	byFoodID := make(map[int64]app.FoodCandidate, cap)
 	if err := r.retrieve(ctx, exactSQL, app.MatchExact, query, cap, byFoodID); err != nil {
 		return nil, err
+	}
+	if len(byFoodID) < query.Limit {
+		if err := r.retrieve(ctx, wordSQL, app.MatchWord, query, cap, byFoodID); err != nil {
+			return nil, err
+		}
 	}
 	if len(byFoodID) < query.Limit {
 		if err := r.retrieve(ctx, prefixSQL, app.MatchPrefix, query, cap, byFoodID); err != nil {
@@ -125,6 +130,8 @@ func matchClassName(class app.MatchClass) string {
 	switch class {
 	case app.MatchExact:
 		return "exact"
+	case app.MatchWord:
+		return "word"
 	case app.MatchPrefix:
 		return "prefix"
 	case app.MatchFuzzy:

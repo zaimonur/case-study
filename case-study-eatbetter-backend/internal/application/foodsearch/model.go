@@ -30,6 +30,7 @@ type MatchClass uint8
 
 const (
 	MatchExact MatchClass = iota
+	MatchWord
 	MatchPrefix
 	MatchFuzzy
 )

@@ -39,7 +39,7 @@ Every handled request receives an `X-Request-ID` response header. Access logs ar
 
 The primary normalized form uses NFC, Turkish-aware casing, collapsed whitespace, and safe punctuation separators while retaining `ç`, `ğ`, `ı`, `ö`, `ş`, and `ü`. A second folded form maps these to ASCII for tolerant input such as `sut` and `cig`; a primary-form match outranks an otherwise equivalent folded match.
 
-Retrieval is staged and SQL-bounded: exact first, prefix only when needed, then trigram fuzzy matching only when the requested set is still incomplete and the query has at least three characters. Ranking is lexicographic and deterministic: exact before prefix before fuzzy, primary before folded, localized display before canonical name before localization alias before food alias before brand, fuzzy similarity within the fuzzy tier, and canonical food ID as the final tie-breaker. Signals from multiple surfaces collapse to one `foods.id`; aliases never become identity.
+Retrieval is staged and SQL-bounded: full-string exact first, whole-word/token-sequence matches next, prefix only when needed, then trigram fuzzy matching only when the requested set is still incomplete and the query has at least three characters. Ranking is lexicographic and deterministic: exact before whole-word before prefix before fuzzy, primary before folded, localized display before canonical name before localization alias before food alias before brand, fuzzy similarity within the fuzzy tier, and canonical food ID as the final tie-breaker. Signals from multiple surfaces collapse to one `foods.id`; aliases never become identity.
 
 Turkish display names and localization aliases participate only when their locale is relevant and `food_localizations.source_canonical_name = foods.canonical_name`. A stale row therefore cannot retrieve a food or become its display name; the response falls back to `foods.canonical_name` without mutating localization data.
 
@@ -97,7 +97,7 @@ The pure-Go models live in `internal/domain/food` and do not depend on PostgreSQ
 - `Nutrition` uses one canonical basis: calories in kcal/100 g and macros in g/100 g.
 - An unavailable nutrient is distinct from a known zero in both Go and PostgreSQL.
 - A `Portion` maps an amount and free-form household measure such as `slice` or `cup, chopped` to grams.
-- A `FoodAlias` may carry a nullable language tag; language-aware resolution remains future work.
+- A `FoodAlias` may carry a nullable language tag; search considers neutral aliases plus exact and base-locale aliases for the request.
 - An `ExternalFoodReference` associates a canonical food with a string identifier owned by a `FoodSource`, currently `usda` or `open_food_facts`.
 - A `FoodIdentifier` associates stable retail identity with a food. GTIN/UPC values remain text, including leading zeroes.
 

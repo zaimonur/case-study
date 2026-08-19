@@ -1,4 +1,4 @@
-.PHONY: up down logs build build-importer test vet verify migrate-up migrate-down
+.PHONY: up down logs build build-importer build-localizer test vet verify migrate-up migrate-down
 
 up:
 	docker compose up --build
@@ -15,13 +15,16 @@ build:
 build-importer:
 	go build -o ./bin/usda-import ./cmd/usda-import
 
+build-localizer:
+	go build -o ./bin/usda-localize ./cmd/usda-localize
+
 test:
 	go test -race ./...
 
 vet:
 	go vet ./...
 
-verify: test vet build build-importer
+verify: test vet build build-importer build-localizer
 
 migrate-up:
 	docker compose run --rm migrate up

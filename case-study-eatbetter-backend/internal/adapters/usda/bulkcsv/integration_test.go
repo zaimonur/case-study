@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	localization "github.com/zaimonur/case-study/case-study-eatbetter-backend/internal/application/foodlocalization"
 	postgresimport "github.com/zaimonur/case-study/case-study-eatbetter-backend/internal/platform/database/foodimport"
 )
 
@@ -58,6 +59,16 @@ func TestPostgresImportIsIdempotentAndPreservesGTINIdentity(t *testing.T) {
 		t.Fatalf("first state = id=%d name=%q brand=%q calories=%v refs=%d", foodID, name, brand, calories, references)
 	}
 	if _, err := pool.Exec(ctx, `INSERT INTO food_aliases (food_id, alias, language_tag) VALUES ($1, 'untouched alias', 'en')`, foodID); err != nil {
+		t.Fatal(err)
+	}
+	var genericFoodID int64
+	if err := pool.QueryRow(ctx, `SELECT food_id FROM external_food_refs WHERE source='usda' AND external_id='200'`).Scan(&genericFoodID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO food_localizations (food_id, locale, display_name, source_canonical_name, source_fingerprint)
+		VALUES ($1, 'tr', 'Temel yiyecek', 'Foundation Food', $2)
+	`, genericFoodID, localization.Fingerprint("Foundation Food")); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := pool.Exec(ctx, `INSERT INTO external_food_refs (food_id, source, external_id) VALUES ($1, 'open_food_facts', 'off-1')`, foodID); err != nil {
@@ -116,6 +127,13 @@ func TestPostgresImportIsIdempotentAndPreservesGTINIdentity(t *testing.T) {
 	}
 	if aliases != 1 || unrelatedReferences != 1 {
 		t.Fatalf("unrelated rows changed: aliases=%d references=%d", aliases, unrelatedReferences)
+	}
+	var localizations int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM food_localizations WHERE food_id=$1 AND display_name='Temel yiyecek'`, genericFoodID).Scan(&localizations); err != nil {
+		t.Fatal(err)
+	}
+	if localizations != 1 {
+		t.Fatalf("USDA re-import changed localization lifecycle: count=%d", localizations)
 	}
 
 	updatedCounts := readCanonicalCounts(t, ctx, pool)

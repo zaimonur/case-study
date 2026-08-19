@@ -74,6 +74,7 @@ The migrations are:
 - `000001_foundation`: verifies the migration lifecycle without creating domain objects.
 - `000002_food_domain`: creates canonical foods, per-100-gram nutrition, household portions, multilingual aliases, and external source references.
 - `000003_food_identifiers`: adds provider-neutral stable product identifiers, initially the `gtin_upc` scheme.
+- `000004_food_localizations`: adds locale-specific display names and their search-only aliases without changing canonical food data.
 
 The food migration is reversible. Removing one migration version drops only the Phase 2 domain tables and leaves the foundation migration applied.
 
@@ -128,16 +129,48 @@ FNDDS portion descriptions are retained verbatim as source-native free-form meas
 
 Provider CSV DTOs live in `internal/adapters/usda/bulkcsv`, mapping/orchestration contracts live in `internal/application/foodimport`, and canonical domain types remain provider-neutral. A future USDA HTTP adapter can therefore produce the same application import records without coupling the domain to CSV layout.
 
+## Deterministic Turkish localization
+
+Phase 4.5 produces conservative Turkish display names for imported generic USDA foods. It does not translate branded foods, call an LLM or translation service, or change USDA canonical names, nutrition, portions, identifiers, or references. A record is localized only when the repository-controlled glossary and rules consume its complete source description; ambiguous and partially matched records remain `review_required` or `untranslated` in the artifact.
+
+Generate the April 2026 JSONL artifact and coverage manifest:
+
+```sh
+go run ./cmd/usda-localize generate \
+  --dataset-dir "$HOME/Desktop/FoodData_Central_csv_2026-04-30" \
+  --dataset-date 2026-04-30 \
+  --output data/localizations/usda/2026-04-30/tr.jsonl \
+  --manifest data/localizations/usda/2026-04-30/tr.manifest.json
+```
+
+The command verifies the exact expected imported generic population: 428 Foundation, 5,431 Survey/FNDDS, and 7,793 SR Legacy foods. Output is sorted by numeric FDC ID and is byte-deterministic for the same dataset and ruleset. The manifest records source-file and artifact SHA-256 values plus coverage and rejection-reason counts.
+
+After the USDA import is present, validate the artifact against PostgreSQL without committing:
+
+```sh
+DATABASE_URL='postgres://eatbetter:eatbetter@localhost:5432/eatbetter?sslmode=disable' \
+  go run ./cmd/usda-localize load \
+  --artifact data/localizations/usda/2026-04-30/tr.jsonl \
+  --manifest data/localizations/usda/2026-04-30/tr.manifest.json \
+  --dry-run
+```
+
+Remove `--dry-run` to perform the atomic, idempotent load. The loader resolves each FDC ID through `external_food_refs`, rejects foods with a GTIN/UPC, and requires exact canonical name and SHA-256 fingerprint agreement. Only `localized` rows are materialized; a scoped `review_required` or `untranslated` result removes an older generated localization.
+
+The USDA importer remains unaware of localization lifecycle. A later canonical-name update can therefore leave a physically present but stale localization. Future readers must compare `food_localizations.source_canonical_name` and `source_fingerprint` with the current canonical name before use, falling back to the USDA `foods.canonical_name` on mismatch. Search and runtime resolution are intentionally outside Phase 4.5.
+
 ## Project structure
 
 ```text
 cmd/api/                    process composition and lifecycle
 cmd/usda-import/            USDA bulk import executable
+cmd/usda-localize/          deterministic artifact generator and loader
 internal/adapters/usda/     provider-specific streaming CSV adapter
 internal/application/       provider-neutral import orchestration contracts
 internal/config/            environment loading and validation
 internal/domain/food/       canonical food domain vocabulary and invariants
 internal/httpapi/           routes, middleware, and HTTP server configuration
+internal/localization/tr/   conservative Turkish glossary and rules
 internal/platform/database/ PostgreSQL pool and transactional import persistence
 migrations/                 versioned schema changes
 ```
@@ -156,4 +189,4 @@ The structure leaves room for feature-oriented domain and application packages i
 
 ## Current boundaries
 
-The current implementation does not include repository CRUD, USDA HTTP API or Open Food Facts adapters, food search or ranking, portion/nutrition calculation engines, meals, AI/LLM integration, authentication, caching, queues, WebSockets, or mobile changes.
+The current implementation does not include repository CRUD, USDA HTTP API or Open Food Facts adapters, food search or ranking, localization resolution, portion/nutrition calculation engines, meals, AI/LLM integration, authentication, caching, queues, WebSockets, or mobile changes.

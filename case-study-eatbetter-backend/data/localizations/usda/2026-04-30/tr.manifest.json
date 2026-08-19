@@ -2,13 +2,13 @@
   "format_version": "eatbetter-food-localizations-v1",
   "dataset_date": "2026-04-30",
   "locale": "tr",
-  "ruleset_version": "tr-usda-v1",
-  "artifact_sha256": "a1a131b663216910a63ca78b2e78647d2780420db53454c6d3f442e77f2ba619",
+  "ruleset_version": "tr-usda-v2",
+  "artifact_sha256": "22f2fe298050aac4fc1b6c7ef38fa6af618b411c4352eddb3689c8c1ec974c11",
   "eligible": 13652,
-  "localized": 339,
-  "review_required": 6376,
-  "untranslated": 6937,
-  "coverage_percent": 2.4831526516261353,
+  "localized": 1350,
+  "review_required": 6379,
+  "untranslated": 5923,
+  "coverage_percent": 9.888661002050982,
   "input_files": [
     {
       "name": "food.csv",
@@ -40,37 +40,37 @@
   "status_counts": [
     {
       "name": "localized",
-      "count": 339
+      "count": 1350
     },
     {
       "name": "review_required",
-      "count": 6376
+      "count": 6379
     },
     {
       "name": "untranslated",
-      "count": 6937
+      "count": 5923
     }
   ],
   "status_by_data_type": [
     {
       "data_type": "foundation_food",
       "status": "localized",
-      "count": 49
+      "count": 129
     },
     {
       "data_type": "foundation_food",
       "status": "review_required",
-      "count": 122
+      "count": 125
     },
     {
       "data_type": "foundation_food",
       "status": "untranslated",
-      "count": 257
+      "count": 174
     },
     {
       "data_type": "sr_legacy_food",
       "status": "localized",
-      "count": 214
+      "count": 704
     },
     {
       "data_type": "sr_legacy_food",
@@ -80,12 +80,12 @@
     {
       "data_type": "sr_legacy_food",
       "status": "untranslated",
-      "count": 3219
+      "count": 2729
     },
     {
       "data_type": "survey_fndds_food",
       "status": "localized",
-      "count": 76
+      "count": 517
     },
     {
       "data_type": "survey_fndds_food",
@@ -95,29 +95,29 @@
     {
       "data_type": "survey_fndds_food",
       "status": "untranslated",
-      "count": 3461
+      "count": 3020
     }
   ],
   "rule_counts": [
     {
       "name": "tr.alias.explicit.v1",
-      "count": 7
+      "count": 10
     },
     {
       "name": "tr.family.exact.v1",
-      "count": 339
+      "count": 1350
     },
     {
       "name": "tr.family.qualifier.v1",
-      "count": 19
+      "count": 735
     },
     {
       "name": "tr.modifier.exact.v1",
-      "count": 334
+      "count": 1135
     },
     {
-      "name": "tr.render.catalog-order.v1",
-      "count": 339
+      "name": "tr.render.turkish-noun-phrase.v2",
+      "count": 1350
     }
   ],
   "reason_counts": [
@@ -131,20 +131,20 @@
     },
     {
       "name": "numeric_or_grade_qualifier",
-      "count": 1546
+      "count": 1550
     },
     {
       "name": "unknown_clause",
-      "count": 993
+      "count": 1121
     },
     {
       "name": "unknown_food_family",
-      "count": 5944
+      "count": 4802
     },
     {
       "name": "unsupported_animal_or_cut",
       "count": 1122
     }
   ],
-  "localized_aliases": 7
+  "localized_aliases": 10
 }

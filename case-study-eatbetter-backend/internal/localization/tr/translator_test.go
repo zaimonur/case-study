@@ -14,11 +14,17 @@ func TestTranslatorLocalizesOnlyFullyConsumedSafeNames(t *testing.T) {
 		want      string
 	}{
 		{"simple raw produce", "Broccoli, raw", "Çiğ brokoli"},
-		{"grain raw means unprepared", "Rice, white, long-grain, raw, unenriched", "Pirinç; beyaz, uzun taneli, pişmemiş, zenginleştirilmemiş"},
-		{"egg white is identity", "Egg, white, raw, frozen, pasteurized", "Yumurta akı; çiğ, dondurulmuş, pastörize"},
+		{"grain raw means unprepared", "Rice, white, long-grain, raw, unenriched", "Beyaz, uzun taneli, pişmemiş, zenginleştirilmemiş pirinç"},
+		{"egg white is identity", "Egg, white, raw, frozen, pasteurized", "Çiğ, dondurulmuş, pastörize yumurta akı"},
 		{"green onion is identity", "Onions, green, raw", "Çiğ taze soğan"},
-		{"nuts are roasted", "Peanuts, roasted, salted", "Yer fıstığı; kavrulmuş, tuzlanmış"},
-		{"seeded means removed", "Peppers, seeded, raw", "Biber; çekirdekleri çıkarılmış, çiğ"},
+		{"nuts are roasted", "Peanuts, roasted, salted", "Kavrulmuş, tuzlanmış yer fıstığı"},
+		{"seeded means removed", "Peppers, seeded, raw", "Çekirdekleri çıkarılmış, çiğ biber"},
+		{"bread qualifier", "Bread, whole-wheat, commercially prepared, toasted", "Ticari olarak hazırlanmış, kızartılmış tam buğday ekmeği"},
+		{"cheese qualifier", "Cheese, mozzarella, low moisture, part-skim, shredded", "Düşük nemli, yarım yağlı sütten yapılmış, rendelenmiş mozzarella peyniri"},
+		{"whole milk identity", "Milk, whole", "Tam yağlı süt"},
+		{"flour qualifier", "Flour, wheat, all-purpose, enriched, unbleached", "Çok amaçlı, zenginleştirilmiş, ağartılmamış buğday unu"},
+		{"tea qualifier", "Tea, iced, brewed, green, decaffeinated, unsweetened", "Kafeinsiz, şekersiz demlenmiş soğuk yeşil çay"},
+		{"potato preparation", "Potato, baked, peel not eaten, no added fat", "Kabuğu yenmeden, yağ eklenmemiş fırında pişmiş patates"},
 	}
 	translator := Translator{}
 	for _, test := range tests {
@@ -44,7 +50,9 @@ func TestTranslatorFailsClosed(t *testing.T) {
 		{"Chicken, breast, skinless, raw", app.StatusReviewRequired, reasonAnimal},
 		{"Rice, brown, NS as to fat", app.StatusReviewRequired, reasonAmbiguous},
 		{"Rice, white, 2% added fat", app.StatusReviewRequired, reasonNumeric},
+		{"Eggs, Grade A, Large, egg white", app.StatusReviewRequired, reasonNumeric},
 		{"Broccoli, mystery preparation", app.StatusUntranslated, reasonUnknownClause},
+		{"Bread, mystery preparation", app.StatusUntranslated, reasonUnknownClause},
 		{"Unmapped family, raw", app.StatusUntranslated, reasonUnknownFamily},
 	}
 	translator := Translator{}

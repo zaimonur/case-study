@@ -17,24 +17,27 @@ import (
 )
 
 type evaluationCase struct {
-	Category string
-	Query    string
-	Locale   string
-	Expected []string
-	NoResult bool
+	Category      string
+	Query         string
+	Locale        string
+	Expected      []string
+	NoResult      bool
+	ProductPolicy string
 }
 
 type queryResult struct {
-	Category     string   `json:"category"`
-	Query        string   `json:"query"`
-	Locale       string   `json:"locale,omitempty"`
-	CandidateIDs []int64  `json:"candidate_ids"`
-	TopDisplays  []string `json:"top_displays"`
-	Top1Hit      *bool    `json:"top_1_hit,omitempty"`
-	Top5Hit      *bool    `json:"top_5_hit,omitempty"`
-	NoResultOK   *bool    `json:"no_result_correct,omitempty"`
-	LatencyMS    float64  `json:"latency_ms"`
-	Error        string   `json:"error,omitempty"`
+	Category        string   `json:"category"`
+	Query           string   `json:"query"`
+	Locale          string   `json:"locale,omitempty"`
+	CandidateIDs    []int64  `json:"candidate_ids"`
+	TopDisplays     []string `json:"top_displays"`
+	Top1Hit         *bool    `json:"top_1_hit,omitempty"`
+	Top5Hit         *bool    `json:"top_5_hit,omitempty"`
+	NoResultOK      *bool    `json:"no_result_correct,omitempty"`
+	ProductPolicy   string   `json:"product_policy,omitempty"`
+	ProductPolicyOK *bool    `json:"product_policy_ok,omitempty"`
+	LatencyMS       float64  `json:"latency_ms"`
+	Error           string   `json:"error,omitempty"`
 }
 
 type report struct {
@@ -47,6 +50,9 @@ type report struct {
 	NoResultCases       int           `json:"no_result_cases"`
 	CorrectNoResults    int           `json:"correct_no_results"`
 	NoResultCorrectness float64       `json:"no_result_correctness"`
+	ProductPolicyCases  int           `json:"product_policy_cases"`
+	ProductPolicyHits   int           `json:"product_policy_hits"`
+	ProductPolicyRate   float64       `json:"product_policy_rate"`
 	LatencyP50MS        float64       `json:"latency_p50_ms"`
 	LatencyP95MS        float64       `json:"latency_p95_ms"`
 }
@@ -113,6 +119,12 @@ func run() error {
 				result.CorrectNoResults++
 			}
 		}
+		if entry.ProductPolicyOK != nil {
+			result.ProductPolicyCases++
+			if *entry.ProductPolicyOK {
+				result.ProductPolicyHits++
+			}
+		}
 	}
 	if result.ExpectedCases > 0 {
 		result.Top1HitRate = float64(result.Top1Hits) / float64(result.ExpectedCases)
@@ -120,6 +132,9 @@ func run() error {
 	}
 	if result.NoResultCases > 0 {
 		result.NoResultCorrectness = float64(result.CorrectNoResults) / float64(result.NoResultCases)
+	}
+	if result.ProductPolicyCases > 0 {
+		result.ProductPolicyRate = float64(result.ProductPolicyHits) / float64(result.ProductPolicyCases)
 	}
 	sort.Float64s(latencies)
 	result.LatencyP50MS = percentile(latencies, 0.50)
@@ -129,7 +144,7 @@ func run() error {
 	} else if *failuresOnly {
 		failures := result.Queries[:0]
 		for _, query := range result.Queries {
-			if (query.Top5Hit != nil && !*query.Top5Hit) || (query.NoResultOK != nil && !*query.NoResultOK) || query.Error != "" {
+			if (query.Top5Hit != nil && !*query.Top5Hit) || (query.NoResultOK != nil && !*query.NoResultOK) || (query.ProductPolicyOK != nil && !*query.ProductPolicyOK) || query.Error != "" {
 				failures = append(failures, query)
 			}
 		}
@@ -166,7 +181,26 @@ func evaluate(test evaluationCase, candidates []app.FoodCandidate, err error, la
 		}
 		result.Top1Hit, result.Top5Hit = &top1, &top5
 	}
+	if test.ProductPolicy != "" {
+		passed := false
+		switch test.ProductPolicy {
+		case "generic_top1":
+			passed = len(candidates) > 0 && !candidates[0].IsBranded
+		case "brand_top1", "brand_only_top1":
+			passed = len(candidates) > 0 && len(test.Expected) > 0 && candidateBrandMatches(candidates[0], test.Expected[0])
+		}
+		result.ProductPolicy = test.ProductPolicy
+		result.ProductPolicyOK = &passed
+	}
 	return result
+}
+
+func candidateBrandMatches(candidate app.FoodCandidate, expected string) bool {
+	if candidate.Brand == nil {
+		return false
+	}
+	brand := " " + app.Normalize(*candidate.Brand).Folded + " "
+	return strings.Contains(brand, " "+app.Normalize(expected).Folded+" ")
 }
 
 func candidateMatches(candidate app.FoodCandidate, expected []string) bool {
@@ -208,7 +242,7 @@ func evaluationCases() []evaluationCase {
 		{Category: "ascii_turkish", Query: "bugday", Locale: "tr", Expected: []string{"wheat", "buckwheat"}},
 		{Category: "ascii_turkish", Query: "pirinc", Locale: "tr", Expected: []string{"rice"}},
 		{Category: "ascii_turkish", Query: "yogurt", Locale: "tr", Expected: []string{"yogurt"}},
-		{Category: "english", Query: "milk", Locale: "tr-TR", Expected: []string{"milk"}},
+		{Category: "english", Query: "milk", Locale: "tr-TR", Expected: []string{"milk"}, ProductPolicy: "generic_top1"},
 		{Category: "english", Query: "egg", Locale: "tr-TR", Expected: []string{"egg"}},
 		{Category: "english", Query: "broccoli", Locale: "tr-TR", Expected: []string{"broccoli"}},
 		{Category: "english", Query: "rice", Locale: "tr-TR", Expected: []string{"rice"}},
@@ -223,11 +257,13 @@ func evaluationCases() []evaluationCase {
 		{Category: "misspelling", Query: "bred", Locale: "en", Expected: []string{"bread"}},
 		{Category: "misspelling", Query: "cheze", Locale: "en", Expected: []string{"cheese"}},
 		{Category: "misspelling", Query: "yougurt", Locale: "en", Expected: []string{"yogurt"}},
-		{Category: "brand", Query: "meijer", Locale: "en", Expected: []string{"meijer"}},
+		{Category: "brand", Query: "meijer", Locale: "en", Expected: []string{"meijer"}, ProductPolicy: "brand_only_top1"},
 		{Category: "brand", Query: "wegmans", Locale: "en", Expected: []string{"wegmans"}},
 		{Category: "brand", Query: "great value", Locale: "en", Expected: []string{"great value"}},
 		{Category: "brand", Query: "kroger", Locale: "en", Expected: []string{"kroger"}},
 		{Category: "brand", Query: "food club", Locale: "en", Expected: []string{"food club"}},
+		{Category: "brand_product", Query: "Kroger milk", Locale: "en", Expected: []string{"kroger", "milk"}, ProductPolicy: "brand_top1"},
+		{Category: "brand_product", Query: "milk Kroger", Locale: "en", Expected: []string{"kroger", "milk"}, ProductPolicy: "brand_top1"},
 		{Category: "no_result", Query: "zzzxqvplm", Locale: "tr", NoResult: true},
 		{Category: "no_result", Query: "qwxzplkjh", Locale: "en", NoResult: true},
 		{Category: "no_result", Query: "vbnmqwzx", Locale: "de-DE", NoResult: true},

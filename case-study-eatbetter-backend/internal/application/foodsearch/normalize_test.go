@@ -47,14 +47,94 @@ func TestNormalizeNFCAndNFDAreEquivalent(t *testing.T) {
 }
 
 type recordingRepository struct {
-	query      Query
-	candidates []FoodCandidate
-	err        error
+	query             Query
+	phrases           []BrandPhrase
+	brandMatch        *BrandMatch
+	brandedQuery      BrandedQuery
+	candidates        []FoodCandidate
+	brandedCandidates []FoodCandidate
+	err               error
 }
 
 func (r *recordingRepository) Search(_ context.Context, query Query) ([]FoodCandidate, error) {
 	r.query = query
 	return r.candidates, r.err
+}
+
+func (r *recordingRepository) ResolveBrand(_ context.Context, phrases []BrandPhrase) (*BrandMatch, error) {
+	r.phrases = phrases
+	return r.brandMatch, r.err
+}
+
+func (r *recordingRepository) SearchBranded(_ context.Context, query BrandedQuery) ([]FoodCandidate, error) {
+	r.brandedQuery = query
+	return r.brandedCandidates, r.err
+}
+
+func TestExplicitBrandIntentRemovesPersistedPhraseAtEitherPosition(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		query       string
+		match       BrandMatch
+		wantProduct string
+	}{
+		{"Kroger milk", BrandMatch{Primary: "kroger", Folded: "kroger", Start: 0, End: 1}, "milk"},
+		{"milk Kroger", BrandMatch{Primary: "kroger", Folded: "kroger", Start: 1, End: 2}, "milk"},
+		{"organic Great Value milk", BrandMatch{Primary: "great value", Folded: "great value", Start: 1, End: 3}, "organic milk"},
+	} {
+		repository := &recordingRepository{brandMatch: &test.match, brandedCandidates: []FoodCandidate{{FoodID: 9}}}
+		got, err := NewService(repository).Search(context.Background(), Request{Query: test.query})
+		if err != nil || len(got) != 1 || got[0].FoodID != 9 {
+			t.Fatalf("Search(%q) = %+v, %v", test.query, got, err)
+		}
+		if repository.brandedQuery.Primary != test.wantProduct || repository.brandedQuery.BrandPrimary != test.match.Primary {
+			t.Fatalf("Search(%q) branded query = %+v", test.query, repository.brandedQuery)
+		}
+	}
+}
+
+func TestBrandOnlyIntentFallsBackToOrdinaryWhenCredibleGenericExists(t *testing.T) {
+	t.Parallel()
+	match := &BrandMatch{Primary: "milk", Folded: "milk", Start: 0, End: 1}
+	repository := &recordingRepository{
+		brandMatch:        match,
+		candidates:        []FoodCandidate{{FoodID: 1, Match: MatchMetadata{Class: MatchWord, Source: SourceCanonicalName}}},
+		brandedCandidates: []FoodCandidate{{FoodID: 2, IsBranded: true}},
+	}
+	got, err := NewService(repository).Search(context.Background(), Request{Query: "milk"})
+	if err != nil || len(got) != 1 || got[0].FoodID != 1 {
+		t.Fatalf("ordinary collision result = %+v, %v", got, err)
+	}
+	if repository.brandedQuery.BrandOnly {
+		t.Fatal("brand-only search ran despite credible generic food evidence")
+	}
+}
+
+func TestBrandOnlyIntentUsesPersistedBrandCatalog(t *testing.T) {
+	t.Parallel()
+	match := &BrandMatch{Primary: "meijer", Folded: "meijer", Start: 0, End: 1}
+	repository := &recordingRepository{
+		brandMatch:        match,
+		brandedCandidates: []FoodCandidate{{FoodID: 2, IsBranded: true}},
+	}
+	got, err := NewService(repository).Search(context.Background(), Request{Query: "meijer"})
+	if err != nil || len(got) != 1 || got[0].FoodID != 2 || !repository.brandedQuery.BrandOnly {
+		t.Fatalf("brand-only result = %+v, query=%+v, err=%v", got, repository.brandedQuery, err)
+	}
+}
+
+func TestBrandPhraseExpansionIsContiguousAndLongestFirst(t *testing.T) {
+	t.Parallel()
+	phrases := brandPhrases(Normalize("milk Great Value"))
+	if len(phrases) != 6 {
+		t.Fatalf("phrase count = %d, want 6", len(phrases))
+	}
+	want := []string{"milk great value", "milk great", "great value", "milk", "great", "value"}
+	for index := range want {
+		if phrases[index].Primary != want[index] {
+			t.Fatalf("phrase %d = %q, want %q", index, phrases[index].Primary, want[index])
+		}
+	}
 }
 
 func TestServiceValidatesAndBuildsRepositoryQuery(t *testing.T) {

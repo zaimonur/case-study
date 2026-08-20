@@ -1,6 +1,6 @@
 # EatBetter Backend
 
-The EatBetter backend includes the Phase 1 runtime foundation, canonical food domain, USDA FoodData Central bulk importer, deterministic Turkish localization, and Phase 5 multilingual canonical-food search. It provides a Go REST API, PostgreSQL, Docker-based local development, explicit migrations, health checks, structured logging, graceful shutdown, pure-Go food models, and a bounded-memory import path. Search returns candidates rather than automatically selecting a food; meals, nutrition calculations, USDA HTTP API access, and mobile changes remain outside the current scope.
+The EatBetter backend includes the runtime foundation, canonical food domain, USDA FoodData Central bulk importer, deterministic Turkish localization, multilingual product-aware food search, canonical food detail, trusted portion resolution, and deterministic nutrition calculation. It provides a Go REST API, PostgreSQL, Docker-based local development, explicit migrations, health checks, structured logging, graceful shutdown, pure-Go food models, and a bounded-memory import path. Search returns candidates rather than automatically selecting a food; the backend alone converts a canonical food plus grams into nutrition truth.
 
 ## Prerequisites
 
@@ -39,9 +39,78 @@ Every handled request receives an `X-Request-ID` response header. Access logs ar
 
 The primary normalized form uses NFC, Turkish-aware casing, collapsed whitespace, and safe punctuation separators while retaining `ç`, `ğ`, `ı`, `ö`, `ş`, and `ü`. A second folded form maps these to ASCII for tolerant input such as `sut` and `cig`; a primary-form match outranks an otherwise equivalent folded match.
 
-Retrieval is staged and SQL-bounded: full-string exact first, whole-word/token-sequence matches next, prefix only when needed, then trigram fuzzy matching only when the requested set is still incomplete and the query has at least three characters. Ranking is lexicographic and deterministic: exact before whole-word before prefix before fuzzy, primary before folded, localized display before canonical name before localization alias before food alias before brand, fuzzy similarity within the fuzzy tier, and canonical food ID as the final tie-breaker. Signals from multiple surfaces collapse to one `foods.id`; aliases never become identity.
+Retrieval is staged and SQL-bounded: full-string exact first, whole-word/token-sequence matches next when the exact pool lacks enough results or credible generic evidence, prefix under the same rule, then trigram fuzzy matching only when the requested set is still incomplete and the query has at least three characters. If a filled strong stage hides generic evidence, one indexed generic-strong query collects bounded exact/whole-word/prefix evidence while excluding GTIN products. Every executed retrieval has a cap of `max(40, public_limit × 5)`, so product composition may inspect more internal candidates than the public limit without materializing the catalog. Ranking is lexicographic and deterministic: exact before whole-word before prefix before fuzzy, primary before folded, localized display before canonical name before localization alias before food alias before brand, leading whole-word matches before interior whole-word matches, fuzzy similarity within the fuzzy tier, and canonical food ID as the final tie-breaker. Signals from multiple surfaces collapse to one `foods.id`; aliases never become identity.
+
+For ordinary food intent, a maximum of half the response is first filled with the strongest credible generic/common exact, whole-word, or prefix candidates; remaining slots retain normal lexical order. Branded identity is derived from the existing stable `gtin_upc` identifier path, not from nullable brand display metadata. Generic fuzzy noise receives no product-priority lane, so it cannot jump ahead of a strong branded exact result merely by being generic.
+
+Brand intent is resolved only from persisted `foods.brand` evidence. All contiguous phrases from the already length-limited query are checked in one bounded database call, longest credible phrase first; there is no static brand dictionary. Thus both `Kroger milk` and `milk Kroger` resolve `Kroger` as the brand and search the remaining `milk` phrase inside matching branded foods. If that explicit brand-product search returns no candidates, search safely falls back to the original full ordinary query; database/internal branded-search errors are propagated and never trigger fallback. A complete persisted brand such as `meijer` produces bounded brand-only discovery. If a whole query is both a real brand and a credible generic food term, credible generic food evidence keeps ordinary intent, preventing brand collisions from hiding common foods.
 
 Turkish display names and localization aliases participate only when their locale is relevant and `food_localizations.source_canonical_name = foods.canonical_name`. A stale row therefore cannot retrieve a food or become its display name; the response falls back to `foods.canonical_name` without mutating localization data.
+
+## Food detail
+
+`GET /foods/{id}?locale=tr-TR` returns the canonical identity, fresh localized display fallback, optional brand, canonical per-100-gram nutrition, and trusted stored portions. IDs must be positive integers. A malformed ID or locale returns `400`, a missing food returns `404`, and unsupported methods return `405` with `Allow: GET`. Valid unsupported locales use canonical display data.
+
+```sh
+curl 'http://localhost:8080/foods/123?locale=tr-TR'
+```
+
+```json
+{
+  "food_id": 123,
+  "display_name": "Tam yağlı süt",
+  "canonical_name": "Milk, whole",
+  "brand": null,
+  "nutrition_per_100g": {
+    "calories_kcal": 61,
+    "protein_g": 3.15,
+    "carbohydrates_g": 4.8,
+    "fat_g": null
+  },
+  "portions": [
+    {"portion_id": 456, "amount": 0.5, "measure": "cup", "grams": 120}
+  ]
+}
+```
+
+Unavailable nutrients are JSON `null`; a persisted known zero is numeric `0`. Foods without stored portions return `"portions": []`. Portions are ordered deterministically by amount, measure, grams, then ID.
+
+## Deterministic nutrition calculation
+
+`POST /nutrition/calculate` supports exactly one of two modes. The direct-grams mode needs no portion lookup:
+
+```sh
+curl -X POST 'http://localhost:8080/nutrition/calculate' \
+  -H 'Content-Type: application/json' \
+  -d '{"food_id":123,"grams":56}'
+```
+
+The stored-portion mode multiplies one exact persisted portion record:
+
+```sh
+curl -X POST 'http://localhost:8080/nutrition/calculate' \
+  -H 'Content-Type: application/json' \
+  -d '{"food_id":123,"portion_id":456,"quantity":2}'
+```
+
+```json
+{
+  "food_id": 123,
+  "resolved_grams": 240,
+  "nutrition": {
+    "calories_kcal": 146.4,
+    "protein_g": 7.56,
+    "carbohydrates_g": 11.52,
+    "fat_g": null
+  }
+}
+```
+
+`quantity` means “number of instances of the selected stored record,” not a newly interpreted household amount. For a stored record `{amount: 0.5, measure: "cup", grams: 120}`, `quantity: 2` resolves to `240 g`; it does not mean “2 cups.” Free-form measure text is never parsed. Missing or mismatched portions fail and never fall back to an estimate. There is no density inference, free-text unit conversion, or ml-to-gram conversion.
+
+The source of truth is the persisted `food_nutrition` per-100-gram row. Resolved grams are rounded first with Go's deterministic `math.Round(value × 100) / 100` policy, then each known nutrient is scaled from that resolved value and rounded with the same policy. Stored source values are not changed, calories are not derived from macros, unknown values remain `null`, and known zero remains `0`. The request body is limited to 4 KiB; unknown fields, a trailing second JSON value, invalid numbers, and ambiguous/both/neither modes return stable `400 {"status":"invalid_request"}` responses.
+
+AI is intentionally absent from this layer. A future AI resolver must select a canonical `food_id` and then consume this same calculation path; it may not invent nutrition. The React Native client likewise renders the returned result and performs no calorie or macro calculation.
 
 ## Configuration
 
@@ -177,12 +246,12 @@ cmd/api/                    process composition and lifecycle
 cmd/usda-import/            USDA bulk import executable
 cmd/usda-localize/          deterministic artifact generator and loader
 internal/adapters/usda/     provider-specific streaming CSV adapter
-internal/application/       provider-neutral import orchestration contracts
+internal/application/       focused search, detail, calculation, import, and localization use cases
 internal/config/            environment loading and validation
 internal/domain/food/       canonical food domain vocabulary and invariants
 internal/httpapi/           routes, middleware, and HTTP server configuration
 internal/localization/tr/   conservative Turkish glossary and rules
-internal/platform/database/ PostgreSQL pool and transactional import persistence
+internal/platform/database/ focused PostgreSQL feature adapters and transactional import persistence
 migrations/                 versioned schema changes
 ```
 
@@ -196,19 +265,21 @@ The structure leaves room for feature-oriented domain and application packages i
 - The food domain uses fixed MVP nutrition fields rather than generic nutrient rows. This keeps missing-versus-zero semantics explicit without introducing a nutrient catalog before it is needed.
 - External source identifiers are separate from canonical food IDs, so future USDA and Open Food Facts adapters can map their DTOs into the same domain.
 - Food search queries existing normalized tables directly. It uses no denormalized mirror, cache, external search engine, vector store, embeddings, or runtime AI dependency.
+- Food detail uses one food/nutrition/localization query plus one ordered portions query; nutrition calculation loads canonical nutrition and optional owned portion through a focused repository.
+- One canonical `foods.id` plus one resolved gram amount produces one backend-owned nutrition result everywhere.
 - The process listens only after configuration and PostgreSQL are valid. On `SIGINT` or `SIGTERM`, HTTP traffic drains before the pool closes.
 - Docker Compose waits for PostgreSQL's health check and uses a named volume. PostgreSQL 18's volume is mounted at `/var/lib/postgresql`, matching the image's major-version-aware data layout.
 
 ## Search evaluation
 
-Run the deterministic 42-query mini evaluation against a populated catalog:
+Run the deterministic 44-query mini evaluation against a populated catalog:
 
 ```sh
 DATABASE_URL='postgres://...' go run ./cmd/food-search-eval -iterations 3
 ```
 
-`-summary-only` emits compact metrics and `-failures-only` retains only notable misses. The checked April 2026 catalog measurements and query-plan observations are recorded in [`docs/phase5-search-evaluation.md`](docs/phase5-search-evaluation.md).
+`-summary-only` emits compact metrics and `-failures-only` retains lexical or product-policy misses. Historical Phase 5 measurements remain in [`docs/phase5-search-evaluation.md`](docs/phase5-search-evaluation.md); Phase 6 product-policy and query-plan observations are in [`docs/phase6-product-core.md`](docs/phase6-product-core.md).
 
 ## Current boundaries
 
-The current implementation does not include repository CRUD, USDA HTTP API or Open Food Facts adapters, automatic semantic food selection, portion/nutrition calculation engines, meals, AI/LLM integration, authentication, caching, queues, WebSockets, or mobile changes.
+The current implementation does not include React Native changes, diary persistence, meal history, authentication, user accounts, cloud sync, OpenAI or another LLM, RAG, embeddings, pgvector, AI meal analysis/chat, recommendations, photo recognition, voice input, barcode scanning UI, micronutrient expansion, PDF reports, Redis, queues, WebSockets, background workers, runtime USDA APIs, or Open Food Facts runtime fallback.

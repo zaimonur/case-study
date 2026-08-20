@@ -69,6 +69,10 @@ SELECT food.id,
        food.canonical_name,
        COALESCE(display.display_name, food.canonical_name),
        food.brand,
+       EXISTS (
+           SELECT 1 FROM food_identifiers identifier
+           WHERE identifier.food_id = food.id AND identifier.scheme = 'gtin_upc'
+       ),
        bounded.form_rank,
        bounded.source_rank,
        bounded.similarity
@@ -94,7 +98,10 @@ WITH signals AS (
                OR food_search_primary(localization.display_name) LIKE '% ' || $1 || ' %'
            ) THEN 0 ELSE 1 END::smallint AS form_rank,
            0::smallint AS source_rank,
-           1.0::double precision AS similarity
+           CASE WHEN (
+               food_search_primary(localization.display_name) LIKE $1 || ' %'
+               OR food_search_folded(localization.display_name) LIKE $2 || ' %'
+           ) THEN 2.0 ELSE 1.0 END::double precision AS similarity
     FROM food_localizations localization
     JOIN foods food ON food.id = localization.food_id
     WHERE localization.source_canonical_name = food.canonical_name
@@ -116,7 +123,10 @@ WITH signals AS (
                OR food_search_primary(food.canonical_name) LIKE '% ' || $1 || ' %'
            ) THEN 0 ELSE 1 END::smallint,
            1::smallint,
-           1.0::double precision
+           CASE WHEN (
+               food_search_primary(food.canonical_name) LIKE $1 || ' %'
+               OR food_search_folded(food.canonical_name) LIKE $2 || ' %'
+           ) THEN 2.0 ELSE 1.0 END::double precision
     FROM foods food
     WHERE food_search_primary(food.canonical_name) LIKE $1 || ' %'
        OR food_search_primary(food.canonical_name) LIKE '% ' || $1
@@ -133,7 +143,10 @@ WITH signals AS (
                OR food_search_primary(alias.alias) LIKE '% ' || $1 || ' %'
            ) THEN 0 ELSE 1 END::smallint,
            2::smallint,
-           1.0::double precision
+           CASE WHEN (
+               food_search_primary(alias.alias) LIKE $1 || ' %'
+               OR food_search_folded(alias.alias) LIKE $2 || ' %'
+           ) THEN 2.0 ELSE 1.0 END::double precision
     FROM food_localization_aliases alias
     JOIN food_localizations localization ON localization.id = alias.localization_id
     JOIN foods food ON food.id = localization.food_id
@@ -156,7 +169,10 @@ WITH signals AS (
                OR food_search_primary(alias.alias) LIKE '% ' || $1 || ' %'
            ) THEN 0 ELSE 1 END::smallint,
            3::smallint,
-           1.0::double precision
+           CASE WHEN (
+               food_search_primary(alias.alias) LIKE $1 || ' %'
+               OR food_search_folded(alias.alias) LIKE $2 || ' %'
+           ) THEN 2.0 ELSE 1.0 END::double precision
     FROM food_aliases alias
     WHERE (alias.language_tag IS NULL OR alias.language_tag IN ($3, $4))
       AND (
@@ -176,7 +192,10 @@ WITH signals AS (
                OR food_search_primary(food.brand) LIKE '% ' || $1 || ' %'
            ) THEN 0 ELSE 1 END::smallint,
            4::smallint,
-           1.0::double precision
+           CASE WHEN (
+               food_search_primary(food.brand) LIKE $1 || ' %'
+               OR food_search_folded(food.brand) LIKE $2 || ' %'
+           ) THEN 2.0 ELSE 1.0 END::double precision
     FROM foods food
     WHERE food.brand IS NOT NULL
       AND (
@@ -196,13 +215,17 @@ best AS (
 bounded AS (
     SELECT food_id, form_rank, source_rank, similarity
     FROM best
-    ORDER BY form_rank, source_rank, food_id
+    ORDER BY form_rank, source_rank, similarity DESC, food_id
     LIMIT $5
 )
 SELECT food.id,
        food.canonical_name,
        COALESCE(display.display_name, food.canonical_name),
        food.brand,
+       EXISTS (
+           SELECT 1 FROM food_identifiers identifier
+           WHERE identifier.food_id = food.id AND identifier.scheme = 'gtin_upc'
+       ),
        bounded.form_rank,
        bounded.source_rank,
        bounded.similarity
@@ -217,7 +240,7 @@ LEFT JOIN LATERAL (
     ORDER BY CASE WHEN localization.locale = $3 THEN 0 ELSE 1 END, localization.id
     LIMIT 1
 ) display ON TRUE
-ORDER BY bounded.form_rank, bounded.source_rank, food.id`
+ORDER BY bounded.form_rank, bounded.source_rank, bounded.similarity DESC, food.id`
 
 const prefixSQL = `
 WITH signals AS (
@@ -284,6 +307,10 @@ SELECT food.id,
        food.canonical_name,
        COALESCE(display.display_name, food.canonical_name),
        food.brand,
+       EXISTS (
+           SELECT 1 FROM food_identifiers identifier
+           WHERE identifier.food_id = food.id AND identifier.scheme = 'gtin_upc'
+       ),
        bounded.form_rank,
        bounded.source_rank,
        bounded.similarity
@@ -380,6 +407,10 @@ SELECT food.id,
        food.canonical_name,
        COALESCE(display.display_name, food.canonical_name),
        food.brand,
+       EXISTS (
+           SELECT 1 FROM food_identifiers identifier
+           WHERE identifier.food_id = food.id AND identifier.scheme = 'gtin_upc'
+       ),
        bounded.form_rank,
        bounded.source_rank,
        bounded.similarity

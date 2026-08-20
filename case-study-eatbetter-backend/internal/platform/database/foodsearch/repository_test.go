@@ -115,6 +115,16 @@ func TestRepositoryIntegration(t *testing.T) {
 	assertFirst("acme", "en-US", ids["branded"], "Crunchy Bread")
 	assertFirst("crunch", "en", ids["branded"], "Crunchy Bread")
 	assertFirst("brocoli", "tr", ids["broccoli"], "Çiğ brokoli")
+	assertFirst("brok", "en", ids["broccoli"], "Broccoli, raw")
+	milkResults := assertFirst("milk", "en", ids["milk"], "Milk, whole")
+	if len(milkResults) < 2 || milkResults[0].IsBranded {
+		t.Fatalf("generic milk was not represented before branded catalog noise: %+v", milkResults)
+	}
+	assertFirst("Kroger milk", "en", ids["kroger_milk"], "MILK")
+	assertFirst("milk Kroger", "en", ids["kroger_milk"], "MILK")
+	assertFirst("meijer", "en", ids["meijer_product"], "YOGURT")
+	assertFirst("Great Value milk", "en", ids["great_value_milk"], "MILK")
+	assertFirst("apple pie", "en", ids["apple_pie"], "Apple pie")
 
 	duplicate := assertFirst("rice", "tr", ids["rice"], "Pirinç")
 	count := 0
@@ -166,6 +176,12 @@ func seedSearchFoods(t *testing.T, ctx context.Context, pool *pgxpool.Pool) map[
 		ids[key] = id
 		return id
 	}
+	identify := func(foodID int64, value string) {
+		t.Helper()
+		if _, err := pool.Exec(ctx, `INSERT INTO food_identifiers (food_id, scheme, value) VALUES ($1, 'gtin_upc', $2)`, foodID, value); err != nil {
+			t.Fatal(err)
+		}
+	}
 	localize := func(foodID int64, display, source string, aliases ...string) {
 		t.Helper()
 		var localizationID int64
@@ -200,6 +216,25 @@ func seedSearchFoods(t *testing.T, ctx context.Context, pool *pgxpool.Pool) map[
 	stale := insertFood("stale", "Updated canonical", nil)
 	localize(stale, "Bayat süt", "Old canonical", "eski süt")
 	insertFood("milk_prefix", "Milk chocolate", nil)
+	for index := 0; index < 12; index++ {
+		brand := "Catalog Brand " + string(rune('A'+index))
+		key := "catalog_milk_" + string(rune('a'+index))
+		foodID := insertFood(key, "MILK", &brand)
+		identify(foodID, "0000000001"+string(rune('A'+index)))
+	}
+	kroger := "Kroger"
+	krogerMilk := insertFood("kroger_milk", "MILK", &kroger)
+	identify(krogerMilk, "000000000200")
+	meijer := "Meijer"
+	meijerProduct := insertFood("meijer_product", "YOGURT", &meijer)
+	identify(meijerProduct, "000000000201")
+	greatValue := "Great Value"
+	greatValueMilk := insertFood("great_value_milk", "MILK", &greatValue)
+	identify(greatValueMilk, "000000000202")
+	apple := "Apple"
+	appleProduct := insertFood("apple_product", "ORANGE JUICE", &apple)
+	identify(appleProduct, "000000000203")
+	insertFood("apple_pie", "Apple pie", nil)
 	return ids
 }
 
@@ -233,6 +268,15 @@ func (q *recordingQueryer) Query(_ context.Context, statement string, _ ...any) 
 	return &emptyRows{}, nil
 }
 
+func (q *recordingQueryer) QueryRow(_ context.Context, statement string, _ ...any) pgx.Row {
+	q.statements = append(q.statements, statement)
+	return noRowsRow{}
+}
+
+type noRowsRow struct{}
+
+func (noRowsRow) Scan(...any) error { return pgx.ErrNoRows }
+
 type emptyRows struct{}
 
 func (*emptyRows) Close()                                       {}
@@ -256,6 +300,48 @@ func TestSQLUsesParametersAndBoundsEveryStage(t *testing.T) {
 				t.Errorf("%s query does not use parameter %s", name, parameter)
 			}
 		}
+	}
+}
+
+func TestProductSQLIsBoundedAndParameterized(t *testing.T) {
+	t.Parallel()
+	for name, statement := range map[string]string{
+		"resolve brand":  resolveBrandSQL,
+		"brand product":  brandProductSQL,
+		"brand only":     brandOnlySQL,
+		"generic strong": genericStrongSQL,
+	} {
+		if !strings.Contains(statement, "LIMIT") {
+			t.Errorf("%s query is not bounded", name)
+		}
+		if !strings.Contains(statement, "$1") {
+			t.Errorf("%s query is not parameterized", name)
+		}
+	}
+}
+
+func TestOrdinaryCompositionDoesNotPromoteGenericFuzzyNoise(t *testing.T) {
+	t.Parallel()
+	ordered := []app.FoodCandidate{
+		{FoodID: 1, IsBranded: true, Match: app.MatchMetadata{Class: app.MatchExact, Source: app.SourceCanonicalName}},
+		{FoodID: 2, Match: app.MatchMetadata{Class: app.MatchFuzzy, Source: app.SourceCanonicalName, Similarity: 0.4}},
+	}
+	got := composeOrdinary(ordered, 2)
+	if len(got) != 2 || got[0].FoodID != 1 {
+		t.Fatalf("composition = %+v, want exact branded before generic fuzzy", got)
+	}
+}
+
+func TestOrdinaryCompositionReservesCredibleGenericLane(t *testing.T) {
+	t.Parallel()
+	ordered := []app.FoodCandidate{
+		{FoodID: 1, IsBranded: true, Match: app.MatchMetadata{Class: app.MatchExact, Source: app.SourceCanonicalName}},
+		{FoodID: 2, Match: app.MatchMetadata{Class: app.MatchWord, Source: app.SourceCanonicalName}},
+		{FoodID: 3, IsBranded: true, Match: app.MatchMetadata{Class: app.MatchExact, Source: app.SourceCanonicalName}},
+	}
+	got := composeOrdinary(ordered, 2)
+	if len(got) != 2 || got[0].FoodID != 2 || got[1].FoodID != 1 {
+		t.Fatalf("composition = %+v, want credible generic then strongest remaining", got)
 	}
 }
 
@@ -331,6 +417,76 @@ func TestRealCatalogQueryPlans(t *testing.T) {
 			}
 			if !strings.Contains(plan, "_search_") {
 				t.Fatalf("%s plan did not use a Phase 5 search index", test.name)
+			}
+		})
+	}
+}
+
+func TestRealCatalogProductQueryPlans(t *testing.T) {
+	databaseURL := os.Getenv("REAL_CATALOG_DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("REAL_CATALOG_DATABASE_URL is not set")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	pool, err := pgxpool.New(ctx, databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	tests := []struct {
+		name      string
+		statement string
+		arguments []any
+	}{
+		{
+			name: "resolve_brand_phrases", statement: resolveBrandSQL,
+			arguments: []any{
+				[]string{"kroger milk", "kroger", "milk"},
+				[]string{"kroger milk", "kroger", "milk"},
+				[]int32{0, 0, 1}, []int32{2, 1, 2}, []int32{2, 1, 1},
+			},
+		},
+		{
+			name: "brand_product", statement: brandProductSQL,
+			arguments: []any{"milk", "milk", "en", "en", 40, "kroger", "kroger", true},
+		},
+		{
+			name: "brand_only", statement: brandOnlySQL,
+			arguments: []any{"meijer", "meijer", "en", "en", 40},
+		},
+		{
+			name: "generic_strong", statement: genericStrongSQL,
+			arguments: []any{"milk", "milk", "en", "en", 50},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			rows, err := pool.Query(ctx, "EXPLAIN (ANALYZE, BUFFERS, FORMAT TEXT) "+test.statement, test.arguments...)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var lines []string
+			for rows.Next() {
+				var line string
+				if err := rows.Scan(&line); err != nil {
+					rows.Close()
+					t.Fatal(err)
+				}
+				lines = append(lines, line)
+			}
+			rows.Close()
+			plan := strings.Join(lines, "\n")
+			if strings.Contains(plan, "Seq Scan on foods ") {
+				t.Fatalf("%s performs a full foods scan:\n%s", test.name, plan)
+			}
+			if !strings.Contains(plan, "_search_") {
+				t.Fatalf("%s did not use a search index:\n%s", test.name, plan)
+			}
+			for _, line := range lines {
+				if strings.HasPrefix(strings.TrimSpace(line), "Execution Time:") {
+					t.Logf("%s", strings.TrimSpace(line))
+				}
 			}
 		})
 	}

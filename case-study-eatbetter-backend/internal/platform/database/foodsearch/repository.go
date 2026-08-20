@@ -18,6 +18,7 @@ const (
 
 type queryer interface {
 	Query(context.Context, string, ...any) (pgx.Rows, error)
+	QueryRow(context.Context, string, ...any) pgx.Row
 }
 
 // Repository is the focused read-side food-search adapter.
@@ -29,7 +30,7 @@ func New(database queryer) *Repository {
 	return &Repository{database: database}
 }
 
-// Search executes exact, whole-word, prefix, then (when necessary) fuzzy retrieval.
+// Search collects every strong lexical stage before product-aware composition.
 func (r *Repository) Search(ctx context.Context, query app.Query) ([]app.FoodCandidate, error) {
 	cap := query.Limit * stageCapFactor
 	if cap < minimumStageCap {
@@ -40,13 +41,25 @@ func (r *Repository) Search(ctx context.Context, query app.Query) ([]app.FoodCan
 	if err := r.retrieve(ctx, exactSQL, app.MatchExact, query, cap, byFoodID); err != nil {
 		return nil, err
 	}
-	if len(byFoodID) < query.Limit {
+	genericChecked, err := r.retrieveGenericIfCrowded(ctx, query, cap, byFoodID, false)
+	if err != nil {
+		return nil, err
+	}
+	if len(byFoodID) < query.Limit || !hasCredibleGeneric(byFoodID) {
 		if err := r.retrieve(ctx, wordSQL, app.MatchWord, query, cap, byFoodID); err != nil {
 			return nil, err
 		}
+		genericChecked, err = r.retrieveGenericIfCrowded(ctx, query, cap, byFoodID, genericChecked)
+		if err != nil {
+			return nil, err
+		}
 	}
-	if len(byFoodID) < query.Limit {
+	if len(byFoodID) < query.Limit || !hasCredibleGeneric(byFoodID) {
 		if err := r.retrieve(ctx, prefixSQL, app.MatchPrefix, query, cap, byFoodID); err != nil {
+			return nil, err
+		}
+		_, err = r.retrieveGenericIfCrowded(ctx, query, cap, byFoodID, genericChecked)
+		if err != nil {
 			return nil, err
 		}
 	}
@@ -61,10 +74,32 @@ func (r *Repository) Search(ctx context.Context, query app.Query) ([]app.FoodCan
 		candidates = append(candidates, candidate)
 	}
 	sort.Slice(candidates, func(left, right int) bool { return stronger(candidates[left], candidates[right]) })
-	if len(candidates) > query.Limit {
-		candidates = candidates[:query.Limit]
+	return composeOrdinary(candidates, query.Limit), nil
+}
+
+func (r *Repository) retrieveGenericIfCrowded(
+	ctx context.Context,
+	query app.Query,
+	cap int,
+	byFoodID map[int64]app.FoodCandidate,
+	alreadyChecked bool,
+) (bool, error) {
+	if alreadyChecked || len(byFoodID) < query.Limit || hasCredibleGeneric(byFoodID) {
+		return alreadyChecked, nil
 	}
-	return candidates, nil
+	if err := r.retrieveProductCandidates(ctx, genericStrongSQL, query, cap, nil, byFoodID); err != nil {
+		return true, fmt.Errorf("retrieve generic product candidates: %w", err)
+	}
+	return true, nil
+}
+
+func hasCredibleGeneric(candidates map[int64]app.FoodCandidate) bool {
+	for _, candidate := range candidates {
+		if !candidate.IsBranded && candidate.Match.Source != app.SourceBrand && candidate.Match.Class <= app.MatchPrefix {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *Repository) retrieve(
@@ -89,6 +124,7 @@ func (r *Repository) retrieve(
 			&candidate.CanonicalName,
 			&candidate.DisplayName,
 			&candidate.Brand,
+			&candidate.IsBranded,
 			&form,
 			&source,
 			&candidate.Match.Similarity,
@@ -110,6 +146,35 @@ func (r *Repository) retrieve(
 	return nil
 }
 
+// composeOrdinary reserves at most half the public response for lexically credible
+// generic/common foods, then fills remaining slots in ordinary lexical order.
+// Fuzzy generic candidates receive no product-priority lane.
+func composeOrdinary(candidates []app.FoodCandidate, limit int) []app.FoodCandidate {
+	result := make([]app.FoodCandidate, 0, min(limit, len(candidates)))
+	selected := make(map[int64]struct{}, limit)
+	genericBudget := (limit + 1) / 2
+	for _, candidate := range candidates {
+		if len(result) >= genericBudget {
+			break
+		}
+		if candidate.IsBranded || candidate.Match.Source == app.SourceBrand || candidate.Match.Class > app.MatchPrefix {
+			continue
+		}
+		result = append(result, candidate)
+		selected[candidate.FoodID] = struct{}{}
+	}
+	for _, candidate := range candidates {
+		if len(result) >= limit {
+			break
+		}
+		if _, exists := selected[candidate.FoodID]; exists {
+			continue
+		}
+		result = append(result, candidate)
+	}
+	return result
+}
+
 func stronger(left, right app.FoodCandidate) bool {
 	if left.Match.Class != right.Match.Class {
 		return left.Match.Class < right.Match.Class
@@ -120,7 +185,7 @@ func stronger(left, right app.FoodCandidate) bool {
 	if left.Match.Source != right.Match.Source {
 		return left.Match.Source < right.Match.Source
 	}
-	if left.Match.Class == app.MatchFuzzy && left.Match.Similarity != right.Match.Similarity {
+	if (left.Match.Class == app.MatchWord || left.Match.Class == app.MatchFuzzy) && left.Match.Similarity != right.Match.Similarity {
 		return left.Match.Similarity > right.Match.Similarity
 	}
 	return left.FoodID < right.FoodID

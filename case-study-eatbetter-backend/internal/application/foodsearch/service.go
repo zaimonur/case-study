@@ -72,7 +72,14 @@ func (s *Service) Search(ctx context.Context, request Request) ([]FoodCandidate,
 				},
 				BrandPrimary: brandMatch.Primary, BrandFolded: brandMatch.Folded,
 			})
-			return normalizeCandidates(candidates, err, "search branded foods")
+			if err != nil {
+				return normalizeCandidates(nil, err, "search branded foods")
+			}
+			if len(candidates) > 0 {
+				return normalizeCandidates(candidates, nil, "")
+			}
+			ordinary, err := s.repository.Search(ctx, query)
+			return normalizeCandidates(ordinary, err, "search foods")
 		}
 
 		ordinary, err := s.repository.Search(ctx, query)

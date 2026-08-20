@@ -17,13 +17,21 @@ import (
 )
 
 type evaluationCase struct {
-	Category      string
-	Query         string
-	Locale        string
-	Expected      []string
-	NoResult      bool
-	ProductPolicy string
+	Category             string
+	Query                string
+	Locale               string
+	Expected             []string
+	NoResult             bool
+	ProductPolicy        string
+	ProductExpectedFood  []string
+	ProductExpectedBrand []string
 }
+
+const (
+	policyGenericTop1   = "generic_top1"
+	policyBrandTop1     = "brand_top1"
+	policyBrandOnlyTop1 = "brand_only_top1"
+)
 
 type queryResult struct {
 	Category        string   `json:"category"`
@@ -76,6 +84,10 @@ func run() error {
 	if *iterations < 1 || *iterations > 20 {
 		return fmt.Errorf("iterations must be between 1 and 20")
 	}
+	cases := evaluationCases()
+	if err := validateEvaluationCases(cases); err != nil {
+		return err
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
@@ -86,7 +98,6 @@ func run() error {
 	defer pool.Close()
 	service := app.NewService(dbfoodsearch.New(pool))
 
-	cases := evaluationCases()
 	result := report{Queries: make([]queryResult, 0, len(cases))}
 	latencies := make([]float64, 0, len(cases)**iterations)
 	for _, test := range cases {
@@ -182,25 +193,86 @@ func evaluate(test evaluationCase, candidates []app.FoodCandidate, err error, la
 		result.Top1Hit, result.Top5Hit = &top1, &top5
 	}
 	if test.ProductPolicy != "" {
-		passed := false
-		switch test.ProductPolicy {
-		case "generic_top1":
-			passed = len(candidates) > 0 && !candidates[0].IsBranded
-		case "brand_top1", "brand_only_top1":
-			passed = len(candidates) > 0 && len(test.Expected) > 0 && candidateBrandMatches(candidates[0], test.Expected[0])
-		}
+		passed := productPolicyMatches(test, candidates)
 		result.ProductPolicy = test.ProductPolicy
 		result.ProductPolicyOK = &passed
 	}
 	return result
 }
 
-func candidateBrandMatches(candidate app.FoodCandidate, expected string) bool {
+func validateEvaluationCases(cases []evaluationCase) error {
+	for _, test := range cases {
+		switch test.ProductPolicy {
+		case "":
+			continue
+		case policyGenericTop1:
+			if !hasExpectation(test.ProductExpectedFood) {
+				return fmt.Errorf("product policy %s for query %q requires expected food", test.ProductPolicy, test.Query)
+			}
+		case policyBrandTop1:
+			if !hasExpectation(test.ProductExpectedBrand) || !hasExpectation(test.ProductExpectedFood) {
+				return fmt.Errorf("product policy %s for query %q requires expected brand and food", test.ProductPolicy, test.Query)
+			}
+		case policyBrandOnlyTop1:
+			if !hasExpectation(test.ProductExpectedBrand) {
+				return fmt.Errorf("product policy %s for query %q requires expected brand", test.ProductPolicy, test.Query)
+			}
+		default:
+			return fmt.Errorf("unsupported product policy %q for query %q", test.ProductPolicy, test.Query)
+		}
+	}
+	return nil
+}
+
+func hasExpectation(values []string) bool {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func productPolicyMatches(test evaluationCase, candidates []app.FoodCandidate) bool {
+	if len(candidates) == 0 {
+		return false
+	}
+	candidate := candidates[0]
+	switch test.ProductPolicy {
+	case policyGenericTop1:
+		return hasExpectation(test.ProductExpectedFood) &&
+			!candidate.IsBranded && candidateFoodMatches(candidate, test.ProductExpectedFood)
+	case policyBrandTop1:
+		return hasExpectation(test.ProductExpectedBrand) && hasExpectation(test.ProductExpectedFood) &&
+			candidateBrandMatches(candidate, test.ProductExpectedBrand) &&
+			candidateFoodMatches(candidate, test.ProductExpectedFood)
+	case policyBrandOnlyTop1:
+		return hasExpectation(test.ProductExpectedBrand) && candidateBrandMatches(candidate, test.ProductExpectedBrand)
+	default:
+		return false
+	}
+}
+
+func candidateFoodMatches(candidate app.FoodCandidate, expected []string) bool {
+	return textMatchesAny(candidate.CanonicalName, expected) || textMatchesAny(candidate.DisplayName, expected)
+}
+
+func candidateBrandMatches(candidate app.FoodCandidate, expected []string) bool {
 	if candidate.Brand == nil {
 		return false
 	}
-	brand := " " + app.Normalize(*candidate.Brand).Folded + " "
-	return strings.Contains(brand, " "+app.Normalize(expected).Folded+" ")
+	return textMatchesAny(*candidate.Brand, expected)
+}
+
+func textMatchesAny(value string, expected []string) bool {
+	haystack := " " + app.Normalize(value).Folded + " "
+	for _, value := range expected {
+		normalized := app.Normalize(value).Folded
+		if normalized != "" && strings.Contains(haystack, " "+normalized+" ") {
+			return true
+		}
+	}
+	return false
 }
 
 func candidateMatches(candidate app.FoodCandidate, expected []string) bool {
@@ -242,7 +314,7 @@ func evaluationCases() []evaluationCase {
 		{Category: "ascii_turkish", Query: "bugday", Locale: "tr", Expected: []string{"wheat", "buckwheat"}},
 		{Category: "ascii_turkish", Query: "pirinc", Locale: "tr", Expected: []string{"rice"}},
 		{Category: "ascii_turkish", Query: "yogurt", Locale: "tr", Expected: []string{"yogurt"}},
-		{Category: "english", Query: "milk", Locale: "tr-TR", Expected: []string{"milk"}, ProductPolicy: "generic_top1"},
+		{Category: "english", Query: "milk", Locale: "tr-TR", Expected: []string{"milk"}, ProductPolicy: policyGenericTop1, ProductExpectedFood: []string{"milk"}},
 		{Category: "english", Query: "egg", Locale: "tr-TR", Expected: []string{"egg"}},
 		{Category: "english", Query: "broccoli", Locale: "tr-TR", Expected: []string{"broccoli"}},
 		{Category: "english", Query: "rice", Locale: "tr-TR", Expected: []string{"rice"}},
@@ -257,13 +329,13 @@ func evaluationCases() []evaluationCase {
 		{Category: "misspelling", Query: "bred", Locale: "en", Expected: []string{"bread"}},
 		{Category: "misspelling", Query: "cheze", Locale: "en", Expected: []string{"cheese"}},
 		{Category: "misspelling", Query: "yougurt", Locale: "en", Expected: []string{"yogurt"}},
-		{Category: "brand", Query: "meijer", Locale: "en", Expected: []string{"meijer"}, ProductPolicy: "brand_only_top1"},
+		{Category: "brand", Query: "meijer", Locale: "en", Expected: []string{"meijer"}, ProductPolicy: policyBrandOnlyTop1, ProductExpectedBrand: []string{"Meijer"}},
 		{Category: "brand", Query: "wegmans", Locale: "en", Expected: []string{"wegmans"}},
 		{Category: "brand", Query: "great value", Locale: "en", Expected: []string{"great value"}},
 		{Category: "brand", Query: "kroger", Locale: "en", Expected: []string{"kroger"}},
 		{Category: "brand", Query: "food club", Locale: "en", Expected: []string{"food club"}},
-		{Category: "brand_product", Query: "Kroger milk", Locale: "en", Expected: []string{"kroger", "milk"}, ProductPolicy: "brand_top1"},
-		{Category: "brand_product", Query: "milk Kroger", Locale: "en", Expected: []string{"kroger", "milk"}, ProductPolicy: "brand_top1"},
+		{Category: "brand_product", Query: "Kroger milk", Locale: "en", Expected: []string{"kroger", "milk"}, ProductPolicy: policyBrandTop1, ProductExpectedBrand: []string{"Kroger"}, ProductExpectedFood: []string{"milk"}},
+		{Category: "brand_product", Query: "milk Kroger", Locale: "en", Expected: []string{"kroger", "milk"}, ProductPolicy: policyBrandTop1, ProductExpectedBrand: []string{"Kroger"}, ProductExpectedFood: []string{"milk"}},
 		{Category: "no_result", Query: "zzzxqvplm", Locale: "tr", NoResult: true},
 		{Category: "no_result", Query: "qwxzplkjh", Locale: "en", NoResult: true},
 		{Category: "no_result", Query: "vbnmqwzx", Locale: "de-DE", NoResult: true},

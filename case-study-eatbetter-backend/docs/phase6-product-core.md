@@ -11,10 +11,12 @@ Measured on 2026-08-20 against the existing April 2026 USDA catalog without modi
 - lexical Top-1 family hits: 32 / 37 (86.5%)
 - lexical Top-5 family recall: 34 / 37 (91.9%)
 - expected no-result correctness: 3 / 3 (100%)
-- product-policy success: 4 / 4 (100%)
-- three-repetition end-to-end latency: p50 122.2 ms, p95 943.6 ms; fuzzy/broad probes remain the tail-latency driver
+- strengthened product-policy success: 4 / 4 (100%)
+- three-repetition end-to-end latency: p50 124.3 ms, p95 960.5 ms; fuzzy/broad probes remain the tail-latency driver
 
-The product-policy cases separately assert generic `milk` Top-1 suitability, explicit `Kroger milk`, reversed `milk Kroger`, and brand-only `meijer`. This prevents a wall of branded exact `MILK` rows from counting as a sufficient generic-food result merely because lexical family recall succeeded.
+The strengthened product-policy cases require generic `milk` Top-1 to have both generic identity and milk food-family relevance. Explicit `Kroger milk` and reversed `milk Kroger` require Kroger brand evidence and milk food-family evidence on the same Top-1 candidate; brand-only `meijer` requires Meijer brand evidence. Food relevance inspects only canonical/display text, while brand relevance inspects only persisted brand text. Historical OR-based lexical metrics remain unchanged.
+
+Explicit brand-product intent now falls back to ordinary search with the original full normalized query only when the branded product search returns zero candidates. Branded-search database/internal errors are propagated without fallback. The deterministic fixture covers the false-positive `Apple` brand plus generic `Apple pie` case.
 
 The historical lexical misses remain visible: `tavuk` lacks a current deterministic localization signal; `millk` favors complete General Mills signals; and `bred` finds a real catalog `BRED` token before bread-family results.
 

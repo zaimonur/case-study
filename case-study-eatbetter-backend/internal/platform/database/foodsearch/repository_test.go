@@ -124,6 +124,7 @@ func TestRepositoryIntegration(t *testing.T) {
 	assertFirst("milk Kroger", "en", ids["kroger_milk"], "MILK")
 	assertFirst("meijer", "en", ids["meijer_product"], "YOGURT")
 	assertFirst("Great Value milk", "en", ids["great_value_milk"], "MILK")
+	assertFirst("apple pie", "en", ids["apple_pie"], "Apple pie")
 
 	duplicate := assertFirst("rice", "tr", ids["rice"], "Pirinç")
 	count := 0
@@ -230,6 +231,10 @@ func seedSearchFoods(t *testing.T, ctx context.Context, pool *pgxpool.Pool) map[
 	greatValue := "Great Value"
 	greatValueMilk := insertFood("great_value_milk", "MILK", &greatValue)
 	identify(greatValueMilk, "000000000202")
+	apple := "Apple"
+	appleProduct := insertFood("apple_product", "ORANGE JUICE", &apple)
+	identify(appleProduct, "000000000203")
+	insertFood("apple_pie", "Apple pie", nil)
 	return ids
 }
 

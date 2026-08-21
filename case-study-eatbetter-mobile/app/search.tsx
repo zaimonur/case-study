@@ -146,6 +146,7 @@ export default function SearchScreen() {
       <TextInput
         autoCapitalize="none"
         autoCorrect={false}
+        autoFocus
         onChangeText={setInput}
         placeholder="Örn. süt"
         returnKeyType="search"

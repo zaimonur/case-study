@@ -1,0 +1,14 @@
+{
+  "expo": {
+    "name": "EatBetter",
+    "slug": "eatbetter-mobile",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "automatic",
+    "plugins": ["expo-router"],
+    "ios": {
+      "supportsTablet": true
+    },
+    "android": {}
+  }
+}

@@ -1,7 +1,7 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 
 import type { MealRecord } from '../domain/meal';
-import { loadMeals } from '../storage/mealStorage';
+import { loadMeals, saveMeals } from '../storage/mealStorage';
 
 type HydrationStatus = 'hydrating' | 'ready' | 'error';
 
@@ -10,6 +10,7 @@ type MealStoreValue = {
   hydrationStatus: HydrationStatus;
   hydrationError: Error | null;
   retryHydration: () => void;
+  addMeal: (meal: MealRecord) => Promise<void>;
 };
 
 const MealStoreContext = createContext<MealStoreValue | null>(null);
@@ -23,14 +24,41 @@ export function MealStoreProvider({ children }: MealStoreProviderProps) {
   const [hydrationStatus, setHydrationStatus] = useState<HydrationStatus>('hydrating');
   const [hydrationError, setHydrationError] = useState<Error | null>(null);
   const [hydrationAttempt, setHydrationAttempt] = useState(0);
+  const mealsRef = useRef<MealRecord[]>([]);
+  const hydrationStatusRef = useRef<HydrationStatus>('hydrating');
+  const writeInFlightRef = useRef(false);
 
   const retryHydration = useCallback(() => {
+    hydrationStatusRef.current = 'hydrating';
+    setHydrationStatus('hydrating');
     setHydrationAttempt((attempt) => attempt + 1);
+  }, []);
+
+  const addMeal = useCallback(async (meal: MealRecord) => {
+    if (hydrationStatusRef.current !== 'ready') {
+      throw new Error('Meals cannot be written before hydration is ready.');
+    }
+
+    if (writeInFlightRef.current) {
+      throw new Error('Another meal write is already in progress.');
+    }
+
+    writeInFlightRef.current = true;
+
+    try {
+      const nextMeals = [...mealsRef.current, meal];
+      await saveMeals(nextMeals);
+      mealsRef.current = nextMeals;
+      setMeals(nextMeals);
+    } finally {
+      writeInFlightRef.current = false;
+    }
   }, []);
 
   useEffect(() => {
     let isActive = true;
 
+    hydrationStatusRef.current = 'hydrating';
     setHydrationStatus('hydrating');
     setHydrationError(null);
 
@@ -40,6 +68,8 @@ export function MealStoreProvider({ children }: MealStoreProviderProps) {
           return;
         }
 
+        mealsRef.current = persistedMeals;
+        hydrationStatusRef.current = 'ready';
         setMeals(persistedMeals);
         setHydrationStatus('ready');
       })
@@ -48,6 +78,7 @@ export function MealStoreProvider({ children }: MealStoreProviderProps) {
           return;
         }
 
+        hydrationStatusRef.current = 'error';
         setHydrationError(error instanceof Error ? error : new Error('Meal hydration failed.'));
         setHydrationStatus('error');
       });
@@ -58,8 +89,8 @@ export function MealStoreProvider({ children }: MealStoreProviderProps) {
   }, [hydrationAttempt]);
 
   const value = useMemo(
-    () => ({ meals, hydrationStatus, hydrationError, retryHydration }),
-    [meals, hydrationStatus, hydrationError, retryHydration],
+    () => ({ meals, hydrationStatus, hydrationError, retryHydration, addMeal }),
+    [meals, hydrationStatus, hydrationError, retryHydration, addMeal],
   );
 
   return <MealStoreContext.Provider value={value}>{children}</MealStoreContext.Provider>;

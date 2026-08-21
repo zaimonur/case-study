@@ -4,3 +4,9 @@ export type NutritionValues = {
   carbohydratesG: number | null;
   fatG: number | null;
 };
+
+export type CalculatedNutrition = {
+  foodId: number;
+  resolvedGrams: number;
+  nutrition: NutritionValues;
+};

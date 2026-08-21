@@ -1,19 +1,23 @@
-import { useLocalSearchParams } from 'expo-router';
+import { router, useLocalSearchParams } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import {
-  ActivityIndicator,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  Text,
-  TextInput,
-  View,
-} from 'react-native';
+import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { isAbortError } from '../../src/api/client';
 import { getFood } from '../../src/api/foods';
-import type { FoodDetail, FoodPortion } from '../../src/domain/food';
-import type { NutritionValues } from '../../src/domain/nutrition';
+import {
+  calculateNutrition,
+  type CalculateNutritionInput,
+} from '../../src/api/nutrition';
+import type { FoodDetail } from '../../src/domain/food';
+import type { MealRecord, MealSelectionSnapshot } from '../../src/domain/meal';
+import type { CalculatedNutrition } from '../../src/domain/nutrition';
+import { CalculatedNutritionCard } from '../../src/features/food/CalculatedNutritionCard';
+import { NutritionReference } from '../../src/features/food/NutritionReference';
+import {
+  PortionSelector,
+  type PortionSelection,
+} from '../../src/features/food/PortionSelector';
+import { useMeals } from '../../src/state/MealStoreProvider';
 
 type DetailRequestState = {
   status: 'invalid' | 'loading' | 'success' | 'error';
@@ -21,10 +25,25 @@ type DetailRequestState = {
   food: FoodDetail | null;
 };
 
-type PortionSelection =
-  | { kind: 'none' }
-  | { kind: 'grams'; grams: string }
-  | { kind: 'portion'; portionId: number; quantity: string };
+type CalculationCandidate = {
+  fingerprint: string;
+  input: CalculateNutritionInput;
+  selection: MealSelectionSnapshot;
+};
+
+type SuccessfulCalculation = {
+  fingerprint: string;
+  result: CalculatedNutrition;
+  selection: MealSelectionSnapshot;
+};
+
+type CalculationState =
+  | { status: 'idle' | 'calculating' | 'error'; success: null }
+  | { status: 'success'; success: SuccessfulCalculation };
+
+type SaveStatus = 'idle' | 'saving' | 'error';
+
+let mealIdSequence = 0;
 
 function parseFoodId(id: string | string[] | undefined): number | null {
   const routeId = Array.isArray(id) ? id[0] : id;
@@ -37,205 +56,181 @@ function parseFoodId(id: string | string[] | undefined): number | null {
   return Number.isSafeInteger(parsedFoodId) && parsedFoodId > 0 ? parsedFoodId : null;
 }
 
-function isPositiveNumberInput(value: string): boolean {
+function parsePositiveNumberInput(value: string): number | null {
   const trimmedValue = value.trim();
 
   if (trimmedValue.length === 0) {
-    return false;
+    return null;
   }
 
   const parsedValue = Number(trimmedValue);
-  return Number.isFinite(parsedValue) && parsedValue > 0;
+  return Number.isFinite(parsedValue) && parsedValue > 0 ? parsedValue : null;
 }
 
-function formatNutritionValue(value: number | null, unit: string): string {
-  return value === null ? '—' : `${value} ${unit}`;
+function getSelectionFingerprint(foodId: number | null, selection: PortionSelection): string {
+  if (selection.kind === 'grams') {
+    return JSON.stringify([foodId, selection.kind, selection.grams]);
+  }
+
+  if (selection.kind === 'portion') {
+    return JSON.stringify([foodId, selection.kind, selection.portionId, selection.quantity]);
+  }
+
+  return JSON.stringify([foodId, selection.kind]);
 }
 
-function NutritionReference({ nutrition }: { nutrition: NutritionValues }) {
-  const rows = [
-    { label: 'Kalori', value: formatNutritionValue(nutrition.caloriesKcal, 'kcal') },
-    { label: 'Protein', value: formatNutritionValue(nutrition.proteinG, 'g') },
-    { label: 'Karbonhidrat', value: formatNutritionValue(nutrition.carbohydratesG, 'g') },
-    { label: 'Yağ', value: formatNutritionValue(nutrition.fatG, 'g') },
-  ];
+function buildCalculationCandidate(
+  food: FoodDetail,
+  selection: PortionSelection,
+  fingerprint: string,
+): CalculationCandidate | null {
+  if (selection.kind === 'grams') {
+    const grams = parsePositiveNumberInput(selection.grams);
 
-  return (
-    <View style={styles.card}>
-      <Text style={styles.sectionTitle}>100 g için referans</Text>
-      <Text style={styles.referenceNote}>
-        Bunlar seçtiğiniz miktarın değil, backend tarafından sağlanan 100 g değerleridir.
-      </Text>
-      <View style={styles.nutritionRows}>
-        {rows.map((row) => (
-          <View key={row.label} style={styles.nutritionRow}>
-            <Text style={styles.nutritionLabel}>{row.label}</Text>
-            <Text style={styles.nutritionValue}>{row.value}</Text>
-          </View>
-        ))}
-      </View>
-    </View>
-  );
+    if (grams === null) {
+      return null;
+    }
+
+    return {
+      fingerprint,
+      input: { foodId: food.foodId, kind: 'grams', grams },
+      selection: { kind: 'grams', grams },
+    };
+  }
+
+  if (selection.kind === 'portion') {
+    const portion = food.portions.find((item) => item.portionId === selection.portionId);
+    const quantity = parsePositiveNumberInput(selection.quantity);
+
+    if (portion === undefined || quantity === null) {
+      return null;
+    }
+
+    return {
+      fingerprint,
+      input: {
+        foodId: food.foodId,
+        kind: 'portion',
+        portionId: portion.portionId,
+        quantity,
+      },
+      selection: {
+        kind: 'portion',
+        portionId: portion.portionId,
+        quantity,
+        amount: portion.amount,
+        measure: portion.measure,
+        portionGrams: portion.grams,
+      },
+    };
+  }
+
+  return null;
 }
 
-function PortionOption({
-  isSelected,
-  onPress,
-  portion,
-}: {
-  isSelected: boolean;
-  onPress: () => void;
-  portion: FoodPortion;
-}) {
-  return (
-    <Pressable
-      accessibilityRole="radio"
-      accessibilityState={{ checked: isSelected }}
-      onPress={onPress}
-      style={({ pressed }) => [
-        styles.selectionOption,
-        isSelected && styles.selectionOptionSelected,
-        pressed && styles.selectionOptionPressed,
-      ]}
-    >
-      <View style={[styles.radio, isSelected && styles.radioSelected]} />
-      <Text style={styles.selectionOptionText}>
-        {portion.amount} {portion.measure} · {portion.grams} g
-      </Text>
-    </Pressable>
-  );
+function createLocalMealId(): string {
+  mealIdSequence += 1;
+  const randomPart = Math.random().toString(36).slice(2, 10);
+  return `meal-${Date.now().toString(36)}-${mealIdSequence.toString(36)}-${randomPart}`;
 }
 
-function AmountSelector({
-  portions,
-  selection,
-  setSelection,
-}: {
-  portions: FoodPortion[];
-  selection: PortionSelection;
-  setSelection: (selection: PortionSelection) => void;
-}) {
-  const gramsAreValid = selection.kind === 'grams' && isPositiveNumberInput(selection.grams);
-  const quantityIsValid =
-    selection.kind === 'portion' && isPositiveNumberInput(selection.quantity);
+function createMealRecord(
+  food: FoodDetail,
+  calculation: SuccessfulCalculation,
+): MealRecord {
+  const selection: MealSelectionSnapshot =
+    calculation.selection.kind === 'grams'
+      ? { kind: 'grams', grams: calculation.selection.grams }
+      : {
+          kind: 'portion',
+          portionId: calculation.selection.portionId,
+          quantity: calculation.selection.quantity,
+          amount: calculation.selection.amount,
+          measure: calculation.selection.measure,
+          portionGrams: calculation.selection.portionGrams,
+        };
 
-  return (
-    <View style={styles.card}>
-      <Text style={styles.sectionTitle}>Miktar seçimi</Text>
-      <Text style={styles.selectionNote}>Bir yöntem seçin. Herhangi bir miktar varsayılmaz.</Text>
-
-      <Pressable
-        accessibilityRole="radio"
-        accessibilityState={{ checked: selection.kind === 'grams' }}
-        onPress={() => {
-          if (selection.kind !== 'grams') {
-            setSelection({ kind: 'grams', grams: '' });
-          }
-        }}
-        style={({ pressed }) => [
-          styles.selectionOption,
-          selection.kind === 'grams' && styles.selectionOptionSelected,
-          pressed && styles.selectionOptionPressed,
-        ]}
-      >
-        <View style={[styles.radio, selection.kind === 'grams' && styles.radioSelected]} />
-        <Text style={styles.selectionOptionText}>Doğrudan gram gir</Text>
-      </Pressable>
-
-      {selection.kind === 'grams' ? (
-        <View style={styles.inputGroup}>
-          <Text style={styles.inputLabel}>Gram</Text>
-          <TextInput
-            keyboardType="decimal-pad"
-            onChangeText={(grams) => setSelection({ kind: 'grams', grams })}
-            placeholder="Örn. 150"
-            style={styles.input}
-            value={selection.grams}
-          />
-          {selection.grams.trim().length === 0 ? (
-            <Text style={styles.inputHint}>0'dan büyük bir gram değeri girin.</Text>
-          ) : (
-            <Text style={gramsAreValid ? styles.validText : styles.invalidText}>
-              {gramsAreValid ? 'Gram seçimi geçerli.' : 'Geçerli, pozitif bir gram değeri girin.'}
-            </Text>
-          )}
-        </View>
-      ) : null}
-
-      {portions.length > 0 ? (
-        <View style={styles.portionGroup}>
-          <Text style={styles.inputLabel}>Kayıtlı porsiyonlar</Text>
-          {portions.map((portion) => {
-            const isSelected =
-              selection.kind === 'portion' && selection.portionId === portion.portionId;
-
-            return (
-              <PortionOption
-                isSelected={isSelected}
-                key={portion.portionId}
-                onPress={() => {
-                  if (!isSelected) {
-                    setSelection({ kind: 'portion', portionId: portion.portionId, quantity: '' });
-                  }
-                }}
-                portion={portion}
-              />
-            );
-          })}
-        </View>
-      ) : (
-        <Text style={styles.noPortions}>Bu yiyecek için kayıtlı porsiyon bulunmuyor.</Text>
-      )}
-
-      {selection.kind === 'portion' ? (
-        <View style={styles.inputGroup}>
-          <Text style={styles.inputLabel}>Porsiyon adedi</Text>
-          <TextInput
-            keyboardType="decimal-pad"
-            onChangeText={(quantity) =>
-              setSelection({ kind: 'portion', portionId: selection.portionId, quantity })
-            }
-            placeholder="Örn. 2"
-            style={styles.input}
-            value={selection.quantity}
-          />
-          {selection.quantity.trim().length === 0 ? (
-            <Text style={styles.inputHint}>0'dan büyük bir porsiyon adedi girin.</Text>
-          ) : (
-            <Text style={quantityIsValid ? styles.validText : styles.invalidText}>
-              {quantityIsValid
-                ? 'Porsiyon seçimi geçerli.'
-                : 'Geçerli, pozitif bir porsiyon adedi girin.'}
-            </Text>
-          )}
-        </View>
-      ) : null}
-    </View>
-  );
+  return {
+    id: createLocalMealId(),
+    loggedAt: new Date().toISOString(),
+    items: [
+      {
+        foodId: food.foodId,
+        displayName: food.displayName,
+        canonicalName: food.canonicalName,
+        brand: food.brand,
+        resolvedGrams: calculation.result.resolvedGrams,
+        nutrition: {
+          caloriesKcal: calculation.result.nutrition.caloriesKcal,
+          proteinG: calculation.result.nutrition.proteinG,
+          carbohydratesG: calculation.result.nutrition.carbohydratesG,
+          fatG: calculation.result.nutrition.fatG,
+        },
+        selection,
+      },
+    ],
+  };
 }
 
 export default function FoodDetailScreen() {
   const { id } = useLocalSearchParams<{ id?: string | string[] }>();
   const foodId = parseFoodId(id);
+  const { addMeal, hydrationStatus } = useMeals();
+
   const activeFoodIdRef = useRef(foodId);
-  const requestGenerationRef = useRef(0);
-  const abortControllerRef = useRef<AbortController | null>(null);
+  const detailGenerationRef = useRef(0);
+  const detailAbortControllerRef = useRef<AbortController | null>(null);
+  const calculationGenerationRef = useRef(0);
+  const calculationAbortControllerRef = useRef<AbortController | null>(null);
+  const calculationInFlightRef = useRef(false);
+  const saveInFlightRef = useRef(false);
+
   const [requestState, setRequestState] = useState<DetailRequestState>({
     status: foodId === null ? 'invalid' : 'loading',
     foodId,
     food: null,
   });
   const [selection, setSelection] = useState<PortionSelection>({ kind: 'none' });
+  const [calculationState, setCalculationState] = useState<CalculationState>({
+    status: 'idle',
+    success: null,
+  });
+  const [saveStatus, setSaveStatus] = useState<SaveStatus>('idle');
+
+  const selectionFingerprint = getSelectionFingerprint(foodId, selection);
+  const activeSelectionFingerprintRef = useRef(selectionFingerprint);
 
   activeFoodIdRef.current = foodId;
+  activeSelectionFingerprintRef.current = selectionFingerprint;
+
+  const invalidateCalculation = useCallback(() => {
+    calculationGenerationRef.current += 1;
+    calculationAbortControllerRef.current?.abort();
+    calculationAbortControllerRef.current = null;
+    calculationInFlightRef.current = false;
+    setCalculationState({ status: 'idle', success: null });
+    setSaveStatus('idle');
+  }, []);
+
+  const handleSelectionChange = useCallback(
+    (nextSelection: PortionSelection) => {
+      if (saveInFlightRef.current) {
+        return;
+      }
+
+      invalidateCalculation();
+      setSelection(nextSelection);
+    },
+    [invalidateCalculation],
+  );
 
   const loadFood = useCallback(async (requestedFoodId: number) => {
-    abortControllerRef.current?.abort();
+    detailAbortControllerRef.current?.abort();
 
-    const requestGeneration = requestGenerationRef.current + 1;
-    requestGenerationRef.current = requestGeneration;
+    const requestGeneration = detailGenerationRef.current + 1;
+    detailGenerationRef.current = requestGeneration;
     const controller = new AbortController();
-    abortControllerRef.current = controller;
+    detailAbortControllerRef.current = controller;
 
     setRequestState({ status: 'loading', foodId: requestedFoodId, food: null });
 
@@ -244,7 +239,7 @@ export default function FoodDetailScreen() {
 
       if (
         controller.signal.aborted ||
-        requestGeneration !== requestGenerationRef.current ||
+        requestGeneration !== detailGenerationRef.current ||
         activeFoodIdRef.current !== requestedFoodId
       ) {
         return;
@@ -255,7 +250,7 @@ export default function FoodDetailScreen() {
       if (
         isAbortError(error) ||
         controller.signal.aborted ||
-        requestGeneration !== requestGenerationRef.current ||
+        requestGeneration !== detailGenerationRef.current ||
         activeFoodIdRef.current !== requestedFoodId
       ) {
         return;
@@ -263,16 +258,17 @@ export default function FoodDetailScreen() {
 
       setRequestState({ status: 'error', foodId: requestedFoodId, food: null });
     } finally {
-      if (abortControllerRef.current === controller) {
-        abortControllerRef.current = null;
+      if (detailAbortControllerRef.current === controller) {
+        detailAbortControllerRef.current = null;
       }
     }
   }, []);
 
   useEffect(() => {
-    requestGenerationRef.current += 1;
-    abortControllerRef.current?.abort();
-    abortControllerRef.current = null;
+    detailGenerationRef.current += 1;
+    detailAbortControllerRef.current?.abort();
+    detailAbortControllerRef.current = null;
+    invalidateCalculation();
     setSelection({ kind: 'none' });
 
     if (foodId === null) {
@@ -283,11 +279,21 @@ export default function FoodDetailScreen() {
     void loadFood(foodId);
 
     return () => {
-      requestGenerationRef.current += 1;
-      abortControllerRef.current?.abort();
-      abortControllerRef.current = null;
+      detailGenerationRef.current += 1;
+      detailAbortControllerRef.current?.abort();
+      detailAbortControllerRef.current = null;
     };
-  }, [foodId, loadFood]);
+  }, [foodId, invalidateCalculation, loadFood]);
+
+  useEffect(
+    () => () => {
+      calculationGenerationRef.current += 1;
+      calculationAbortControllerRef.current?.abort();
+      calculationAbortControllerRef.current = null;
+      calculationInFlightRef.current = false;
+    },
+    [],
+  );
 
   const displayedState: DetailRequestState =
     requestState.foodId === foodId
@@ -327,9 +333,9 @@ export default function FoodDetailScreen() {
               void loadFood(foodId);
             }
           }}
-          style={styles.retryButton}
+          style={styles.secondaryButton}
         >
-          <Text style={styles.retryButtonText}>Tekrar Dene</Text>
+          <Text style={styles.secondaryButtonText}>Tekrar Dene</Text>
         </Pressable>
       </View>
     );
@@ -340,6 +346,102 @@ export default function FoodDetailScreen() {
   if (food === null) {
     return null;
   }
+
+  const calculationCandidate = buildCalculationCandidate(food, selection, selectionFingerprint);
+  const freshCalculation =
+    calculationState.status === 'success' &&
+    calculationState.success.fingerprint === selectionFingerprint &&
+    calculationState.success.result.foodId === food.foodId
+      ? calculationState.success
+      : null;
+  const calculationIsRunning = calculationState.status === 'calculating';
+  const saveIsRunning = saveStatus === 'saving';
+  const calculateIsEnabled =
+    calculationCandidate !== null &&
+    !calculationIsRunning &&
+    !saveIsRunning &&
+    freshCalculation === null;
+
+  const handleCalculate = async () => {
+    if (
+      calculationCandidate === null ||
+      calculationInFlightRef.current ||
+      saveInFlightRef.current
+    ) {
+      return;
+    }
+
+    calculationAbortControllerRef.current?.abort();
+    const requestGeneration = calculationGenerationRef.current + 1;
+    calculationGenerationRef.current = requestGeneration;
+    const controller = new AbortController();
+    calculationAbortControllerRef.current = controller;
+    calculationInFlightRef.current = true;
+    setCalculationState({ status: 'calculating', success: null });
+    setSaveStatus('idle');
+
+    try {
+      const result = await calculateNutrition(calculationCandidate.input, controller.signal);
+
+      if (
+        controller.signal.aborted ||
+        requestGeneration !== calculationGenerationRef.current ||
+        activeFoodIdRef.current !== food.foodId ||
+        activeSelectionFingerprintRef.current !== calculationCandidate.fingerprint
+      ) {
+        return;
+      }
+
+      setCalculationState({
+        status: 'success',
+        success: {
+          fingerprint: calculationCandidate.fingerprint,
+          result,
+          selection: calculationCandidate.selection,
+        },
+      });
+    } catch (error) {
+      if (
+        isAbortError(error) ||
+        controller.signal.aborted ||
+        requestGeneration !== calculationGenerationRef.current ||
+        activeFoodIdRef.current !== food.foodId ||
+        activeSelectionFingerprintRef.current !== calculationCandidate.fingerprint
+      ) {
+        return;
+      }
+
+      setCalculationState({ status: 'error', success: null });
+    } finally {
+      if (calculationAbortControllerRef.current === controller) {
+        calculationAbortControllerRef.current = null;
+        calculationInFlightRef.current = false;
+      }
+    }
+  };
+
+  const handleAddMeal = async () => {
+    if (
+      freshCalculation === null ||
+      hydrationStatus !== 'ready' ||
+      saveInFlightRef.current
+    ) {
+      return;
+    }
+
+    const mealToSave = createMealRecord(food, freshCalculation);
+    saveInFlightRef.current = true;
+    setSaveStatus('saving');
+
+    try {
+      await addMeal(mealToSave);
+      router.dismissTo('/(tabs)');
+    } catch {
+      setSaveStatus('error');
+    } finally {
+      saveInFlightRef.current = false;
+    }
+  };
 
   return (
     <ScrollView
@@ -356,7 +458,71 @@ export default function FoodDetailScreen() {
       </View>
 
       <NutritionReference nutrition={food.nutritionPer100g} />
-      <AmountSelector portions={food.portions} selection={selection} setSelection={setSelection} />
+      <PortionSelector
+        disabled={saveIsRunning}
+        isSelectionValid={calculationCandidate !== null}
+        onSelectionChange={handleSelectionChange}
+        portions={food.portions}
+        selection={selection}
+      />
+
+      <Pressable
+        accessibilityRole="button"
+        disabled={!calculateIsEnabled}
+        onPress={() => void handleCalculate()}
+        style={({ pressed }) => [
+          styles.primaryButton,
+          !calculateIsEnabled && styles.disabledButton,
+          pressed && calculateIsEnabled && styles.pressedButton,
+        ]}
+      >
+        {calculationIsRunning ? <ActivityIndicator color="#ffffff" /> : null}
+        <Text style={styles.primaryButtonText}>
+          {calculationIsRunning ? 'Hesaplanıyor…' : 'Besin Değerini Hesapla'}
+        </Text>
+      </Pressable>
+
+      {calculationState.status === 'error' ? (
+        <Text style={styles.inlineError}>
+          Besin değeri hesaplanamadı. Seçiminizi koruduk; tekrar deneyebilirsiniz.
+        </Text>
+      ) : null}
+
+      {freshCalculation !== null ? (
+        <>
+          <CalculatedNutritionCard result={freshCalculation.result} />
+
+          {hydrationStatus === 'ready' ? (
+            <Pressable
+              accessibilityRole="button"
+              disabled={saveIsRunning}
+              onPress={() => void handleAddMeal()}
+              style={({ pressed }) => [
+                styles.addButton,
+                saveIsRunning && styles.disabledButton,
+                pressed && !saveIsRunning && styles.pressedButton,
+              ]}
+            >
+              {saveIsRunning ? <ActivityIndicator color="#ffffff" /> : null}
+              <Text style={styles.primaryButtonText}>
+                {saveIsRunning ? 'Günlüğe Ekleniyor…' : 'Günlüğe Ekle'}
+              </Text>
+            </Pressable>
+          ) : (
+            <Text style={styles.storeStatusText}>
+              {hydrationStatus === 'hydrating'
+                ? 'Öğün kayıtları hazırlanıyor…'
+                : 'Öğün kaydı şu anda kullanılamıyor.'}
+            </Text>
+          )}
+
+          {saveStatus === 'error' ? (
+            <Text style={styles.inlineError}>
+              Öğün günlüğe eklenemedi. Hesaplamanız korundu; tekrar deneyebilirsiniz.
+            </Text>
+          ) : null}
+        </>
+      ) : null}
     </ScrollView>
   );
 }
@@ -374,60 +540,41 @@ const styles = StyleSheet.create({
   },
   stateText: { color: '#64716c', fontSize: 15, lineHeight: 22, textAlign: 'center' },
   errorTitle: { color: '#7a3028', fontSize: 17, fontWeight: '700', textAlign: 'center' },
-  retryButton: {
+  secondaryButton: {
     borderRadius: 10,
     paddingHorizontal: 15,
     paddingVertical: 11,
     backgroundColor: '#e6f2ed',
   },
-  retryButtonText: { color: '#1f664f', fontWeight: '700' },
+  secondaryButtonText: { color: '#1f664f', fontWeight: '700' },
   title: { color: '#1d2b26', fontSize: 30, fontWeight: '700' },
   canonicalName: { marginTop: 7, color: '#64716c', fontSize: 15 },
   brand: { marginTop: 8, color: '#28785f', fontSize: 15, fontWeight: '600' },
-  card: {
-    borderWidth: 1,
-    borderColor: '#dce7e1',
-    borderRadius: 16,
-    padding: 18,
-    backgroundColor: '#ffffff',
-  },
-  sectionTitle: { color: '#1d2b26', fontSize: 19, fontWeight: '700' },
-  referenceNote: { marginTop: 7, color: '#6c7873', fontSize: 13, lineHeight: 19 },
-  nutritionRows: { marginTop: 16, gap: 11 },
-  nutritionRow: { flexDirection: 'row', justifyContent: 'space-between', gap: 16 },
-  nutritionLabel: { color: '#52605b', fontSize: 15 },
-  nutritionValue: { color: '#1d2b26', fontSize: 15, fontWeight: '600' },
-  selectionNote: { marginTop: 7, marginBottom: 15, color: '#6c7873', fontSize: 13 },
-  selectionOption: {
+  primaryButton: {
+    minHeight: 52,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 11,
-    borderWidth: 1,
-    borderColor: '#d5e1db',
-    borderRadius: 12,
-    padding: 14,
-    backgroundColor: '#ffffff',
+    justifyContent: 'center',
+    gap: 10,
+    borderRadius: 14,
+    paddingHorizontal: 18,
+    paddingVertical: 15,
+    backgroundColor: '#28785f',
   },
-  selectionOptionSelected: { borderColor: '#28785f', backgroundColor: '#eff7f3' },
-  selectionOptionPressed: { opacity: 0.76 },
-  selectionOptionText: { flex: 1, color: '#26332e', fontSize: 15, fontWeight: '600' },
-  radio: { width: 18, height: 18, borderWidth: 2, borderColor: '#95a39d', borderRadius: 9 },
-  radioSelected: { borderWidth: 5, borderColor: '#28785f' },
-  inputGroup: { gap: 8, marginTop: 14 },
-  portionGroup: { gap: 10, marginTop: 20 },
-  inputLabel: { color: '#52605b', fontSize: 14, fontWeight: '700' },
-  input: {
-    borderWidth: 1,
-    borderColor: '#cddbd4',
-    borderRadius: 12,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    backgroundColor: '#ffffff',
-    color: '#1d2b26',
-    fontSize: 16,
+  addButton: {
+    minHeight: 52,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 10,
+    borderRadius: 14,
+    paddingHorizontal: 18,
+    paddingVertical: 15,
+    backgroundColor: '#1f664f',
   },
-  inputHint: { color: '#6c7873', fontSize: 13 },
-  validText: { color: '#28785f', fontSize: 13, fontWeight: '600' },
-  invalidText: { color: '#9b3f34', fontSize: 13, fontWeight: '600' },
-  noPortions: { marginTop: 18, color: '#6c7873', fontSize: 14, lineHeight: 20 },
+  primaryButtonText: { color: '#ffffff', fontSize: 16, fontWeight: '700' },
+  disabledButton: { opacity: 0.48 },
+  pressedButton: { opacity: 0.8 },
+  inlineError: { color: '#8e3b32', fontSize: 14, lineHeight: 20 },
+  storeStatusText: { color: '#64716c', fontSize: 14, lineHeight: 20, textAlign: 'center' },
 });

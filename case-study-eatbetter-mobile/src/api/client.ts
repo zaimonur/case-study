@@ -32,6 +32,11 @@ type GetJsonOptions = {
   signal?: AbortSignal;
 };
 
+type PostJsonOptions = {
+  body: unknown;
+  signal?: AbortSignal;
+};
+
 export type ApiJsonResult = {
   data: unknown;
   httpStatus: number;
@@ -96,24 +101,7 @@ export function isAbortError(error: unknown): boolean {
   return error instanceof Error && error.name === 'AbortError';
 }
 
-export async function getJson(path: string, options: GetJsonOptions): Promise<ApiJsonResult> {
-  const url = buildApiUrl(path, options.query);
-  let response: Response;
-
-  try {
-    response = await fetch(url, {
-      method: 'GET',
-      headers: { Accept: 'application/json' },
-      signal: options.signal,
-    });
-  } catch (error) {
-    if (isAbortError(error)) {
-      throw error;
-    }
-
-    throw new ApiError('network', 'The API request could not be completed.', {}, { cause: error });
-  }
-
+async function parseJsonResponse(response: Response): Promise<ApiJsonResult> {
   const requestId = response.headers.get('X-Request-ID') ?? undefined;
   let data: unknown;
 
@@ -147,4 +135,50 @@ export async function getJson(path: string, options: GetJsonOptions): Promise<Ap
   }
 
   return { data, httpStatus: response.status, requestId };
+}
+
+export async function getJson(path: string, options: GetJsonOptions): Promise<ApiJsonResult> {
+  const url = buildApiUrl(path, options.query);
+  let response: Response;
+
+  try {
+    response = await fetch(url, {
+      method: 'GET',
+      headers: { Accept: 'application/json' },
+      signal: options.signal,
+    });
+  } catch (error) {
+    if (isAbortError(error)) {
+      throw error;
+    }
+
+    throw new ApiError('network', 'The API request could not be completed.', {}, { cause: error });
+  }
+
+  return parseJsonResponse(response);
+}
+
+export async function postJson(path: string, options: PostJsonOptions): Promise<ApiJsonResult> {
+  const url = buildApiUrl(path, {});
+  let response: Response;
+
+  try {
+    response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(options.body),
+      signal: options.signal,
+    });
+  } catch (error) {
+    if (isAbortError(error)) {
+      throw error;
+    }
+
+    throw new ApiError('network', 'The API request could not be completed.', {}, { cause: error });
+  }
+
+  return parseJsonResponse(response);
 }

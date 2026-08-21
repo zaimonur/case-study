@@ -7,7 +7,7 @@ export type GramsSelectionSnapshot = {
 
 export type PortionSelectionSnapshot = {
   kind: 'portion';
-  portionId: string;
+  portionId: number;
   quantity: number;
   amount: number;
   measure: string;
@@ -17,7 +17,7 @@ export type PortionSelectionSnapshot = {
 export type MealSelectionSnapshot = GramsSelectionSnapshot | PortionSelectionSnapshot;
 
 export type MealItem = {
-  foodId: string;
+  foodId: number;
   displayName: string;
   canonicalName: string;
   brand: string | null;

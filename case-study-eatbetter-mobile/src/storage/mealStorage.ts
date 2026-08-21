@@ -45,7 +45,7 @@ function isSelectionSnapshot(value: unknown): value is MealSelectionSnapshot {
 
   if (value.kind === 'portion') {
     return (
-      typeof value.portionId === 'string' &&
+      isFiniteNumber(value.portionId) &&
       isFiniteNumber(value.quantity) &&
       isFiniteNumber(value.amount) &&
       typeof value.measure === 'string' &&
@@ -59,7 +59,7 @@ function isSelectionSnapshot(value: unknown): value is MealSelectionSnapshot {
 function isMealItem(value: unknown): value is MealItem {
   return (
     isRecord(value) &&
-    typeof value.foodId === 'string' &&
+    isFiniteNumber(value.foodId) &&
     typeof value.displayName === 'string' &&
     typeof value.canonicalName === 'string' &&
     (typeof value.brand === 'string' || value.brand === null) &&

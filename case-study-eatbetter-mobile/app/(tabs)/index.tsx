@@ -1,19 +1,72 @@
-import { router } from 'expo-router';
-import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
+import { router, useFocusEffect } from 'expo-router';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import {
+  ActivityIndicator,
+  AppState,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+} from 'react-native';
 
+import { calculateDailyTotals } from '../../src/domain/dailyTotals';
+import { getMealsForLocalDay } from '../../src/domain/localDate';
+import { DailySummaryCard } from '../../src/features/home/DailySummaryCard';
+import { EmptyDayState } from '../../src/features/home/EmptyDayState';
+import { MealRow } from '../../src/features/home/MealRow';
 import { useMeals } from '../../src/state/MealStoreProvider';
 
-const formattedToday = new Intl.DateTimeFormat('tr-TR', {
-  day: 'numeric',
-  month: 'long',
-  weekday: 'long',
-}).format(new Date());
-
 export default function HomeScreen() {
-  const { hydrationError, hydrationStatus, retryHydration } = useMeals();
+  const { hydrationStatus, meals, retryHydration } = useMeals();
+  const [referenceDate, setReferenceDate] = useState(() => new Date());
+
+  const refreshReferenceDate = useCallback(() => {
+    setReferenceDate(new Date());
+  }, []);
+
+  useFocusEffect(
+    useCallback(() => {
+      refreshReferenceDate();
+    }, [refreshReferenceDate]),
+  );
+
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', (nextState) => {
+      if (nextState === 'active') {
+        refreshReferenceDate();
+      }
+    });
+
+    return () => subscription.remove();
+  }, [refreshReferenceDate]);
+
+  const formattedToday = useMemo(
+    () =>
+      new Intl.DateTimeFormat('tr-TR', {
+        day: 'numeric',
+        month: 'long',
+        weekday: 'long',
+        year: 'numeric',
+      }).format(referenceDate),
+    [referenceDate],
+  );
+
+  const readyDayData = useMemo(() => {
+    if (hydrationStatus !== 'ready') {
+      return null;
+    }
+
+    const todayMeals = getMealsForLocalDay(meals, referenceDate);
+
+    return {
+      meals: todayMeals,
+      totals: calculateDailyTotals(todayMeals),
+    };
+  }, [hydrationStatus, meals, referenceDate]);
 
   return (
-    <View style={styles.container}>
+    <ScrollView contentContainerStyle={styles.container} style={styles.screen}>
       <View>
         <Text style={styles.eyebrow}>Bugün</Text>
         <Text style={styles.date}>{formattedToday}</Text>
@@ -27,15 +80,17 @@ export default function HomeScreen() {
         <Text style={styles.searchButtonText}>Yiyecek Ara</Text>
       </Pressable>
 
-      <View style={styles.stateCard}>
-        {hydrationStatus === 'hydrating' ? (
+      {hydrationStatus === 'hydrating' ? (
+        <View style={styles.stateCard}>
           <View style={styles.inlineState}>
             <ActivityIndicator color="#28785f" />
             <Text style={styles.stateText}>Kayıtlı öğünler yükleniyor…</Text>
           </View>
-        ) : null}
+        </View>
+      ) : null}
 
-        {hydrationStatus === 'error' ? (
+      {hydrationStatus === 'error' ? (
+        <View style={styles.stateCard}>
           <View style={styles.errorState}>
             <Text style={styles.errorTitle}>Öğünler yüklenemedi</Text>
             <Text style={styles.stateText}>
@@ -45,28 +100,35 @@ export default function HomeScreen() {
               <Text style={styles.retryButtonText}>Tekrar Dene</Text>
             </Pressable>
           </View>
-        ) : null}
+        </View>
+      ) : null}
 
-        {hydrationStatus === 'ready' && hydrationError === null ? (
-          <Text style={styles.stateText}>Öğün takibi için hazırsınız.</Text>
-        ) : null}
-      </View>
-    </View>
+      {readyDayData !== null ? (
+        <>
+          <DailySummaryCard totals={readyDayData.totals} />
+
+          {readyDayData.meals.length === 0 ? (
+            <EmptyDayState />
+          ) : (
+            <View style={styles.mealSection}>
+              <Text style={styles.sectionTitle}>Bugünün öğünleri</Text>
+              <View style={styles.meals}>
+                {readyDayData.meals.map((meal, index) => (
+                  <MealRow key={`${meal.id}-${index}`} meal={meal} />
+                ))}
+              </View>
+            </View>
+          )}
+        </>
+      ) : null}
+    </ScrollView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    gap: 28,
-    padding: 24,
-    backgroundColor: '#f7faf8',
-  },
-  eyebrow: {
-    color: '#1d2b26',
-    fontSize: 34,
-    fontWeight: '700',
-  },
+  screen: { flex: 1, backgroundColor: '#f7faf8' },
+  container: { gap: 24, padding: 24, paddingBottom: 44 },
+  eyebrow: { color: '#1d2b26', fontSize: 34, fontWeight: '700' },
   date: {
     marginTop: 6,
     color: '#64716c',
@@ -80,14 +142,8 @@ const styles = StyleSheet.create({
     paddingVertical: 17,
     backgroundColor: '#28785f',
   },
-  searchButtonPressed: {
-    opacity: 0.82,
-  },
-  searchButtonText: {
-    color: '#ffffff',
-    fontSize: 17,
-    fontWeight: '700',
-  },
+  searchButtonPressed: { opacity: 0.82 },
+  searchButtonText: { color: '#ffffff', fontSize: 17, fontWeight: '700' },
   stateCard: {
     minHeight: 92,
     justifyContent: 'center',
@@ -97,24 +153,10 @@ const styles = StyleSheet.create({
     padding: 18,
     backgroundColor: '#ffffff',
   },
-  inlineState: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-  },
-  errorState: {
-    gap: 10,
-  },
-  errorTitle: {
-    color: '#7a3028',
-    fontSize: 16,
-    fontWeight: '700',
-  },
-  stateText: {
-    color: '#52605b',
-    fontSize: 15,
-    lineHeight: 22,
-  },
+  inlineState: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  errorState: { gap: 10 },
+  errorTitle: { color: '#7a3028', fontSize: 16, fontWeight: '700' },
+  stateText: { color: '#52605b', fontSize: 15, lineHeight: 22 },
   retryButton: {
     alignSelf: 'flex-start',
     borderRadius: 10,
@@ -122,8 +164,8 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     backgroundColor: '#e6f2ed',
   },
-  retryButtonText: {
-    color: '#1f664f',
-    fontWeight: '700',
-  },
+  retryButtonText: { color: '#1f664f', fontWeight: '700' },
+  mealSection: { gap: 13 },
+  sectionTitle: { color: '#1d2b26', fontSize: 19, fontWeight: '700' },
+  meals: { gap: 12 },
 });

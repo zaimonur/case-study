@@ -9,7 +9,10 @@ export default function RootLayout() {
       <StatusBar style="auto" />
       <Stack>
         <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
-        <Stack.Screen name="search" options={{ title: 'Yiyecek Ara' }} />
+        <Stack.Screen
+          name="search"
+          options={{ headerBackButtonDisplayMode: 'minimal', title: 'Yiyecek Ara' }}
+        />
         <Stack.Screen name="food/[id]" options={{ title: 'Yiyecek Detayı' }} />
       </Stack>
     </MealStoreProvider>

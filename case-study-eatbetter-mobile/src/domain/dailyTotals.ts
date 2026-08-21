@@ -1,33 +1,54 @@
 import type { MealRecord } from './meal';
-import type { NutritionValues } from './nutrition';
 
-function addNutrient(total: number | null, value: number | null): number | null {
-  if (total === null || value === null) {
-    return null;
-  }
+export type AggregateMetric = {
+  knownTotal: number;
+  knownItemCount: number;
+  unknownItemCount: number;
+};
 
-  return total + value;
+export type DailyNutritionAggregate = {
+  caloriesKcal: AggregateMetric;
+  proteinG: AggregateMetric;
+  carbohydratesG: AggregateMetric;
+  fatG: AggregateMetric;
+};
+
+function createEmptyMetric(): AggregateMetric {
+  return {
+    knownTotal: 0,
+    knownItemCount: 0,
+    unknownItemCount: 0,
+  };
 }
 
-export function calculateDailyTotals(meals: MealRecord[]): NutritionValues {
-  const totals: NutritionValues = {
-    caloriesKcal: 0,
-    proteinG: 0,
-    carbohydratesG: 0,
-    fatG: 0,
+function includeValue(metric: AggregateMetric, value: number | null): void {
+  if (value === null) {
+    metric.unknownItemCount += 1;
+    return;
+  }
+
+  metric.knownTotal += value;
+  metric.knownItemCount += 1;
+}
+
+export function calculateDailyNutritionAggregate(
+  meals: MealRecord[],
+): DailyNutritionAggregate {
+  const aggregate: DailyNutritionAggregate = {
+    caloriesKcal: createEmptyMetric(),
+    proteinG: createEmptyMetric(),
+    carbohydratesG: createEmptyMetric(),
+    fatG: createEmptyMetric(),
   };
 
   meals.forEach((meal) => {
     meal.items.forEach((item) => {
-      totals.caloriesKcal = addNutrient(totals.caloriesKcal, item.nutrition.caloriesKcal);
-      totals.proteinG = addNutrient(totals.proteinG, item.nutrition.proteinG);
-      totals.carbohydratesG = addNutrient(
-        totals.carbohydratesG,
-        item.nutrition.carbohydratesG,
-      );
-      totals.fatG = addNutrient(totals.fatG, item.nutrition.fatG);
+      includeValue(aggregate.caloriesKcal, item.nutrition.caloriesKcal);
+      includeValue(aggregate.proteinG, item.nutrition.proteinG);
+      includeValue(aggregate.carbohydratesG, item.nutrition.carbohydratesG);
+      includeValue(aggregate.fatG, item.nutrition.fatG);
     });
   });
 
-  return totals;
+  return aggregate;
 }

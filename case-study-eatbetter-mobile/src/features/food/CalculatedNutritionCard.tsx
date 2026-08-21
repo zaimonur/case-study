@@ -17,6 +17,9 @@ export function CalculatedNutritionCard({ result }: { result: CalculatedNutritio
     },
     { label: 'Yağ', value: formatNutritionValue(result.nutrition.fatG, 'g') },
   ];
+  const hasIncompleteNutrition = Object.values(result.nutrition).some(
+    (value) => value === null,
+  );
 
   return (
     <View style={styles.card}>
@@ -30,6 +33,12 @@ export function CalculatedNutritionCard({ result }: { result: CalculatedNutritio
           </View>
         ))}
       </View>
+      {hasIncompleteNutrition ? (
+        <Text style={styles.infoNote}>
+          Bu yiyeceğin bazı besin değerleri mevcut değil. Günlük toplamlar eksik alanlarda
+          kısmi gösterilecektir.
+        </Text>
+      ) : null}
     </View>
   );
 }
@@ -48,4 +57,5 @@ const styles = StyleSheet.create({
   row: { flexDirection: 'row', justifyContent: 'space-between', gap: 16 },
   label: { color: '#52605b', fontSize: 15 },
   value: { color: '#1d2b26', fontSize: 15, fontWeight: '700' },
+  infoNote: { marginTop: 15, color: '#527064', fontSize: 13, lineHeight: 19 },
 });

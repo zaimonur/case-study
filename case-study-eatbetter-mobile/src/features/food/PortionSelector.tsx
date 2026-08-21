@@ -1,6 +1,7 @@
 import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 
 import type { FoodPortion } from '../../domain/food';
+import { formatPortionDescription } from './formatPortionDescription';
 
 export type PortionSelection =
   | { kind: 'none' }
@@ -29,9 +30,7 @@ function PortionOption({ disabled, isSelected, onPress, portion }: PortionOption
       ]}
     >
       <View style={[styles.radio, isSelected && styles.radioSelected]} />
-      <Text style={styles.selectionOptionText}>
-        {portion.amount} {portion.measure} · {portion.grams} g
-      </Text>
+      <Text style={styles.selectionOptionText}>{formatPortionDescription(portion)}</Text>
     </Pressable>
   );
 }

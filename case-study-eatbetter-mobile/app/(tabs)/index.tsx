@@ -1,7 +1,8 @@
 import { router, useFocusEffect } from 'expo-router';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   AppState,
   Pressable,
   ScrollView,
@@ -10,16 +11,20 @@ import {
   View,
 } from 'react-native';
 
-import { calculateDailyTotals } from '../../src/domain/dailyTotals';
+import { calculateDailyNutritionAggregate } from '../../src/domain/dailyTotals';
 import { getMealsForLocalDay } from '../../src/domain/localDate';
+import type { MealRecord } from '../../src/domain/meal';
 import { DailySummaryCard } from '../../src/features/home/DailySummaryCard';
 import { EmptyDayState } from '../../src/features/home/EmptyDayState';
 import { MealRow } from '../../src/features/home/MealRow';
 import { useMeals } from '../../src/state/MealStoreProvider';
 
 export default function HomeScreen() {
-  const { hydrationStatus, meals, retryHydration } = useMeals();
+  const { hydrationStatus, meals, removeMeal, retryHydration } = useMeals();
   const [referenceDate, setReferenceDate] = useState(() => new Date());
+  const [deletingMealId, setDeletingMealId] = useState<string | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const deleteInFlightRef = useRef(false);
 
   const refreshReferenceDate = useCallback(() => {
     setReferenceDate(new Date());
@@ -61,9 +66,54 @@ export default function HomeScreen() {
 
     return {
       meals: todayMeals,
-      totals: calculateDailyTotals(todayMeals),
+      aggregate: calculateDailyNutritionAggregate(todayMeals),
     };
   }, [hydrationStatus, meals, referenceDate]);
+
+  const deleteConfirmedMeal = useCallback(
+    async (mealId: string) => {
+      if (deleteInFlightRef.current) {
+        return;
+      }
+
+      deleteInFlightRef.current = true;
+      setDeletingMealId(mealId);
+      setDeleteError(null);
+
+      try {
+        await removeMeal(mealId);
+      } catch {
+        setDeleteError('Öğün silinemedi. Lütfen tekrar deneyin.');
+      } finally {
+        deleteInFlightRef.current = false;
+        setDeletingMealId(null);
+      }
+    },
+    [removeMeal],
+  );
+
+  const requestMealDeletion = useCallback(
+    (meal: MealRecord) => {
+      if (deleteInFlightRef.current) {
+        return;
+      }
+
+      const message =
+        meal.items.length === 1
+          ? `${meal.items[0].displayName} öğününü silmek istiyor musunuz?`
+          : 'Bu öğünü silmek istiyor musunuz?';
+
+      Alert.alert('Öğünü sil', message, [
+        { text: 'İptal', style: 'cancel' },
+        {
+          text: 'Sil',
+          style: 'destructive',
+          onPress: () => void deleteConfirmedMeal(meal.id),
+        },
+      ]);
+    },
+    [deleteConfirmedMeal],
+  );
 
   return (
     <ScrollView contentContainerStyle={styles.container} style={styles.screen}>
@@ -105,16 +155,24 @@ export default function HomeScreen() {
 
       {readyDayData !== null ? (
         <>
-          <DailySummaryCard totals={readyDayData.totals} />
+          <DailySummaryCard aggregate={readyDayData.aggregate} />
 
           {readyDayData.meals.length === 0 ? (
             <EmptyDayState />
           ) : (
             <View style={styles.mealSection}>
               <Text style={styles.sectionTitle}>Bugünün öğünleri</Text>
+              {deleteError !== null ? (
+                <Text style={styles.deleteError}>{deleteError}</Text>
+              ) : null}
               <View style={styles.meals}>
                 {readyDayData.meals.map((meal, index) => (
-                  <MealRow key={`${meal.id}-${index}`} meal={meal} />
+                  <MealRow
+                    deleteDisabled={deletingMealId !== null}
+                    key={`${meal.id}-${index}`}
+                    meal={meal}
+                    onDelete={() => requestMealDeletion(meal)}
+                  />
                 ))}
               </View>
             </View>
@@ -167,5 +225,6 @@ const styles = StyleSheet.create({
   retryButtonText: { color: '#1f664f', fontWeight: '700' },
   mealSection: { gap: 13 },
   sectionTitle: { color: '#1d2b26', fontSize: 19, fontWeight: '700' },
+  deleteError: { color: '#8e3b32', fontSize: 14, lineHeight: 20 },
   meals: { gap: 12 },
 });

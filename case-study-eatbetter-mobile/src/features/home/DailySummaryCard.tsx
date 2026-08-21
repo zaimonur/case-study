@@ -1,22 +1,33 @@
 import { StyleSheet, Text, View } from 'react-native';
 
-import type { NutritionValues } from '../../domain/nutrition';
+import type {
+  AggregateMetric,
+  DailyNutritionAggregate,
+} from '../../domain/dailyTotals';
 
 const numberFormatter = new Intl.NumberFormat('tr-TR', {
   maximumFractionDigits: 2,
 });
 
-function formatValue(value: number | null, unit: string): string {
-  return value === null ? '—' : `${numberFormatter.format(value)} ${unit}`;
+function formatMetric(metric: AggregateMetric, unit: string): string {
+  if (metric.knownItemCount === 0 && metric.unknownItemCount > 0) {
+    return '—';
+  }
+
+  const formattedTotal = `${numberFormatter.format(metric.knownTotal)} ${unit}`;
+  return metric.unknownItemCount > 0 ? `En az ${formattedTotal}` : formattedTotal;
 }
 
-export function DailySummaryCard({ totals }: { totals: NutritionValues }) {
+export function DailySummaryCard({ aggregate }: { aggregate: DailyNutritionAggregate }) {
   const entries = [
-    { label: 'Kalori', value: formatValue(totals.caloriesKcal, 'kcal') },
-    { label: 'Protein', value: formatValue(totals.proteinG, 'g') },
-    { label: 'Karbonhidrat', value: formatValue(totals.carbohydratesG, 'g') },
-    { label: 'Yağ', value: formatValue(totals.fatG, 'g') },
+    { label: 'Kalori', value: formatMetric(aggregate.caloriesKcal, 'kcal') },
+    { label: 'Protein', value: formatMetric(aggregate.proteinG, 'g') },
+    { label: 'Karbonhidrat', value: formatMetric(aggregate.carbohydratesG, 'g') },
+    { label: 'Yağ', value: formatMetric(aggregate.fatG, 'g') },
   ];
+  const hasUnknownNutrition = Object.values(aggregate).some(
+    (metric) => metric.unknownItemCount > 0,
+  );
 
   return (
     <View style={styles.card}>
@@ -29,6 +40,12 @@ export function DailySummaryCard({ totals }: { totals: NutritionValues }) {
           </View>
         ))}
       </View>
+      {hasUnknownNutrition ? (
+        <Text style={styles.infoNote}>
+          Bazı öğünlerde besin verisi eksik. “En az” değerleri yalnızca bilinen verilerin
+          toplamıdır.
+        </Text>
+      ) : null}
     </View>
   );
 }
@@ -46,4 +63,5 @@ const styles = StyleSheet.create({
   metric: { width: '47%', borderRadius: 12, padding: 13, backgroundColor: '#f1f7f4' },
   label: { color: '#64716c', fontSize: 13 },
   value: { marginTop: 5, color: '#1d2b26', fontSize: 17, fontWeight: '700' },
+  infoNote: { marginTop: 15, color: '#60706a', fontSize: 13, lineHeight: 19 },
 });

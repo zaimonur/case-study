@@ -11,6 +11,7 @@ type MealStoreValue = {
   hydrationError: Error | null;
   retryHydration: () => void;
   addMeal: (meal: MealRecord) => Promise<void>;
+  removeMeal: (mealId: string) => Promise<void>;
 };
 
 const MealStoreContext = createContext<MealStoreValue | null>(null);
@@ -55,6 +56,31 @@ export function MealStoreProvider({ children }: MealStoreProviderProps) {
     }
   }, []);
 
+  const removeMeal = useCallback(async (mealId: string) => {
+    if (hydrationStatusRef.current !== 'ready') {
+      throw new Error('Meals cannot be written before hydration is ready.');
+    }
+
+    if (writeInFlightRef.current) {
+      throw new Error('Another meal write is already in progress.');
+    }
+
+    if (!mealsRef.current.some((meal) => meal.id === mealId)) {
+      return;
+    }
+
+    writeInFlightRef.current = true;
+
+    try {
+      const nextMeals = mealsRef.current.filter((meal) => meal.id !== mealId);
+      await saveMeals(nextMeals);
+      mealsRef.current = nextMeals;
+      setMeals(nextMeals);
+    } finally {
+      writeInFlightRef.current = false;
+    }
+  }, []);
+
   useEffect(() => {
     let isActive = true;
 
@@ -89,8 +115,8 @@ export function MealStoreProvider({ children }: MealStoreProviderProps) {
   }, [hydrationAttempt]);
 
   const value = useMemo(
-    () => ({ meals, hydrationStatus, hydrationError, retryHydration, addMeal }),
-    [meals, hydrationStatus, hydrationError, retryHydration, addMeal],
+    () => ({ meals, hydrationStatus, hydrationError, retryHydration, addMeal, removeMeal }),
+    [meals, hydrationStatus, hydrationError, retryHydration, addMeal, removeMeal],
   );
 
   return <MealStoreContext.Provider value={value}>{children}</MealStoreContext.Provider>;

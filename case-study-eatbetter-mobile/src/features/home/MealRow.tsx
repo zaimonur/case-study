@@ -1,4 +1,4 @@
-import { StyleSheet, Text, View } from 'react-native';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import type { MealRecord } from '../../domain/meal';
 
@@ -16,16 +16,36 @@ function formatNumber(value: number): string {
 }
 
 function formatCalories(value: number | null): string {
-  return value === null ? '—' : `${formatNumber(value)} kcal`;
+  return value === null ? 'Kalori bilinmiyor' : `${formatNumber(value)} kcal`;
 }
 
-export function MealRow({ meal }: { meal: MealRecord }) {
+type MealRowProps = {
+  deleteDisabled: boolean;
+  meal: MealRecord;
+  onDelete: () => void;
+};
+
+export function MealRow({ deleteDisabled, meal, onDelete }: MealRowProps) {
   const loggedDate = new Date(meal.loggedAt);
   const loggedTime = Number.isNaN(loggedDate.getTime()) ? '—' : timeFormatter.format(loggedDate);
 
   return (
     <View style={styles.card}>
-      <Text style={styles.time}>{loggedTime}</Text>
+      <View style={styles.mealHeader}>
+        <Text style={styles.time}>{loggedTime}</Text>
+        <Pressable
+          accessibilityRole="button"
+          disabled={deleteDisabled}
+          onPress={onDelete}
+          style={({ pressed }) => [
+            styles.deleteButton,
+            deleteDisabled && styles.deleteButtonDisabled,
+            pressed && !deleteDisabled && styles.deleteButtonPressed,
+          ]}
+        >
+          <Text style={styles.deleteButtonText}>Sil</Text>
+        </Pressable>
+      </View>
 
       {meal.items.length === 0 ? (
         <Text style={styles.emptyItem}>Bu öğünde kayıtlı yiyecek bulunmuyor.</Text>
@@ -55,7 +75,12 @@ const styles = StyleSheet.create({
     padding: 16,
     backgroundColor: '#ffffff',
   },
+  mealHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   time: { color: '#28785f', fontSize: 13, fontWeight: '700' },
+  deleteButton: { borderRadius: 8, paddingHorizontal: 10, paddingVertical: 6 },
+  deleteButtonDisabled: { opacity: 0.4 },
+  deleteButtonPressed: { backgroundColor: '#f8e9e7' },
+  deleteButtonText: { color: '#a33e32', fontSize: 13, fontWeight: '700' },
   items: { gap: 14, marginTop: 10 },
   item: { gap: 5 },
   itemHeader: { flexDirection: 'row', alignItems: 'flex-start', gap: 14 },

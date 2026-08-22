@@ -67,6 +67,24 @@ func TestExtractorSendsBoundedStrictRequest(t *testing.T) {
 	if userMessage["role"] != "user" || userMessage["content"] != "elma" {
 		t.Fatalf("user message = %#v", userMessage)
 	}
+	systemMessage := messages[0].(map[string]any)
+	systemPrompt, ok := systemMessage["content"].(string)
+	if !ok || systemMessage["role"] != "system" {
+		t.Fatalf("system message = %#v", systemMessage)
+	}
+	for _, instruction := range []string{
+		"explicit numeric quantity directly modifies a countable food",
+		"no other explicit measurement unit is present",
+		`"2 yumurta" means quantity = 2 and unitHint = "adet"`,
+		`"3 elma" means quantity = 3 and unitHint = "adet"`,
+		`"2 dilim ekmek" means quantity = 2 and unitHint = "dilim"`,
+		`"200 g tavuk" means quantity = 200 and unitHint = "g"`,
+		`Never use "adet" to override an explicit measurement unit`,
+	} {
+		if !strings.Contains(systemPrompt, instruction) {
+			t.Errorf("system prompt is missing count-unit instruction %q", instruction)
+		}
+	}
 
 	format := captured["response_format"].(map[string]any)
 	if format["type"] != "json_schema" {

@@ -25,7 +25,7 @@ func TestHealthDoesNotDependOnDatabase(t *testing.T) {
 	router := NewRouter(discardLogger(), time.Second, func(context.Context) error {
 		pingCalled = true
 		return errors.New("database unavailable")
-	}, &stubFoodSearcher{}, nil, nil)
+	}, &stubFoodSearcher{}, nil, nil, nil)
 
 	response := performRequest(router, http.MethodGet, "/health")
 	if response.Code != http.StatusOK {
@@ -67,7 +67,7 @@ func TestReadinessReportsDatabaseState(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			router := NewRouter(discardLogger(), time.Second, tt.ping, &stubFoodSearcher{}, nil, nil)
+			router := NewRouter(discardLogger(), time.Second, tt.ping, &stubFoodSearcher{}, nil, nil, nil)
 			response := performRequest(router, http.MethodGet, "/ready")
 			if response.Code != tt.wantStatus {
 				t.Fatalf("status = %d, want %d", response.Code, tt.wantStatus)
@@ -86,7 +86,7 @@ func TestReadinessAppliesTimeout(t *testing.T) {
 	router := NewRouter(discardLogger(), 5*time.Millisecond, func(ctx context.Context) error {
 		<-ctx.Done()
 		return ctx.Err()
-	}, &stubFoodSearcher{}, nil, nil)
+	}, &stubFoodSearcher{}, nil, nil, nil)
 
 	response := performRequest(router, http.MethodGet, "/ready")
 	if response.Code != http.StatusServiceUnavailable {
@@ -97,7 +97,7 @@ func TestReadinessAppliesTimeout(t *testing.T) {
 func TestHealthEndpointsRejectOtherMethods(t *testing.T) {
 	t.Parallel()
 
-	router := NewRouter(discardLogger(), time.Second, func(context.Context) error { return nil }, &stubFoodSearcher{}, nil, nil)
+	router := NewRouter(discardLogger(), time.Second, func(context.Context) error { return nil }, &stubFoodSearcher{}, nil, nil, nil)
 	for _, path := range []string{"/health", "/ready"} {
 		response := performRequest(router, http.MethodPost, path)
 		if response.Code != http.StatusMethodNotAllowed {
@@ -115,7 +115,7 @@ func TestRequestMiddlewareAddsIDAndLogsRequest(t *testing.T) {
 
 	var logs bytes.Buffer
 	logger := slog.New(slog.NewJSONHandler(&logs, nil))
-	router := NewRouter(logger, time.Second, func(context.Context) error { return nil }, &stubFoodSearcher{}, nil, nil)
+	router := NewRouter(logger, time.Second, func(context.Context) error { return nil }, &stubFoodSearcher{}, nil, nil, nil)
 
 	response := performRequest(router, http.MethodGet, "/health")
 	requestID := response.Header().Get(requestIDHeader)
@@ -155,7 +155,7 @@ func TestFoodSearchReturnsSmallStableResponse(t *testing.T) {
 		FoodID: 42, CanonicalName: "Milk, whole", DisplayName: "Tam yağlı süt", Brand: &brand,
 		Match: foodsearch.MatchMetadata{Similarity: 0.99},
 	}}}
-	router := NewRouter(discardLogger(), time.Second, func(context.Context) error { return nil }, search, nil, nil)
+	router := NewRouter(discardLogger(), time.Second, func(context.Context) error { return nil }, search, nil, nil, nil)
 
 	response := performRequest(router, http.MethodGet, "/foods/search?q=s%C3%BCt&locale=tr-TR&limit=5")
 	if response.Code != http.StatusOK {
@@ -174,7 +174,7 @@ func TestFoodSearchReturnsSmallStableResponse(t *testing.T) {
 func TestFoodSearchValidation(t *testing.T) {
 	t.Parallel()
 	service := foodsearch.NewService(&httpSearchRepository{})
-	router := NewRouter(discardLogger(), time.Second, func(context.Context) error { return nil }, service, nil, nil)
+	router := NewRouter(discardLogger(), time.Second, func(context.Context) error { return nil }, service, nil, nil, nil)
 	tests := []string{
 		"/foods/search",
 		"/foods/search?q=",
@@ -203,7 +203,7 @@ func TestFoodSearchValidation(t *testing.T) {
 func TestFoodSearchValidUnsupportedLocaleAndEmptyResult(t *testing.T) {
 	t.Parallel()
 	service := foodsearch.NewService(&httpSearchRepository{})
-	router := NewRouter(discardLogger(), time.Second, func(context.Context) error { return nil }, service, nil, nil)
+	router := NewRouter(discardLogger(), time.Second, func(context.Context) error { return nil }, service, nil, nil, nil)
 	response := performRequest(router, http.MethodGet, "/foods/search?q=milch&locale=de-DE")
 	if response.Code != http.StatusOK || response.Body.String() != "{\"items\":[]}\n" {
 		t.Fatalf("response = %d %q", response.Code, response.Body.String())
@@ -212,7 +212,7 @@ func TestFoodSearchValidUnsupportedLocaleAndEmptyResult(t *testing.T) {
 
 func TestFoodSearchRejectsOtherMethods(t *testing.T) {
 	t.Parallel()
-	router := NewRouter(discardLogger(), time.Second, func(context.Context) error { return nil }, &stubFoodSearcher{}, nil, nil)
+	router := NewRouter(discardLogger(), time.Second, func(context.Context) error { return nil }, &stubFoodSearcher{}, nil, nil, nil)
 	response := performRequest(router, http.MethodPost, "/foods/search?q=milk")
 	if response.Code != http.StatusMethodNotAllowed || response.Header().Get("Allow") != http.MethodGet {
 		t.Fatalf("response = %d Allow=%q", response.Code, response.Header().Get("Allow"))
@@ -222,7 +222,7 @@ func TestFoodSearchRejectsOtherMethods(t *testing.T) {
 func TestFoodSearchFailureDoesNotLeakDatabaseDetails(t *testing.T) {
 	t.Parallel()
 	search := &stubFoodSearcher{err: errors.New("postgres password=secret relation foods")}
-	router := NewRouter(discardLogger(), time.Second, func(context.Context) error { return nil }, search, nil, nil)
+	router := NewRouter(discardLogger(), time.Second, func(context.Context) error { return nil }, search, nil, nil, nil)
 	response := performRequest(router, http.MethodGet, "/foods/search?q=milk")
 	if response.Code != http.StatusInternalServerError || response.Body.String() != "{\"status\":\"internal_error\"}\n" {
 		t.Fatalf("response = %d %q", response.Code, response.Body.String())
@@ -244,7 +244,7 @@ func TestFoodDetailSuccess(t *testing.T) {
 		Food: food.Food{ID: 42, CanonicalName: "Milk", Brand: &brand}, DisplayName: "Süt",
 		Nutrition: &nutrition, Portions: []food.Portion{portion},
 	}}
-	router := NewRouter(discardLogger(), time.Second, func(context.Context) error { return nil }, &stubFoodSearcher{}, service, nil)
+	router := NewRouter(discardLogger(), time.Second, func(context.Context) error { return nil }, &stubFoodSearcher{}, service, nil, nil)
 	response := performRequest(router, http.MethodGet, "/foods/42?locale=tr-TR")
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d: %s", response.Code, response.Body.String())
@@ -279,14 +279,14 @@ func TestFoodDetailErrorsAndMethod(t *testing.T) {
 	}
 	for _, test := range tests {
 		service := &stubFoodDetailer{err: test.err}
-		router := NewRouter(discardLogger(), time.Second, func(context.Context) error { return nil }, &stubFoodSearcher{}, service, nil)
+		router := NewRouter(discardLogger(), time.Second, func(context.Context) error { return nil }, &stubFoodSearcher{}, service, nil, nil)
 		response := performRequest(router, http.MethodGet, test.path)
 		if response.Code != test.want || response.Body.String() != "{\"status\":\""+test.body+"\"}\n" {
 			t.Errorf("GET %s = %d %q", test.path, response.Code, response.Body.String())
 		}
 		assertJSONResponse(t, response)
 	}
-	router := NewRouter(discardLogger(), time.Second, func(context.Context) error { return nil }, &stubFoodSearcher{}, &stubFoodDetailer{}, nil)
+	router := NewRouter(discardLogger(), time.Second, func(context.Context) error { return nil }, &stubFoodSearcher{}, &stubFoodDetailer{}, nil, nil)
 	response := performRequest(router, http.MethodPost, "/foods/1")
 	if response.Code != 405 || response.Header().Get("Allow") != http.MethodGet {
 		t.Fatalf("POST detail = %d Allow=%q", response.Code, response.Header().Get("Allow"))
@@ -301,7 +301,7 @@ func TestNutritionDirectAndPortionRequests(t *testing.T) {
 		FoodID: 1, ResolvedGrams: 56,
 		Nutrition: nutritioncalc.Nutrition{Calories: knownZero, Protein: protein},
 	}}
-	router := NewRouter(discardLogger(), time.Second, func(context.Context) error { return nil }, &stubFoodSearcher{}, nil, calculator)
+	router := NewRouter(discardLogger(), time.Second, func(context.Context) error { return nil }, &stubFoodSearcher{}, nil, calculator, nil)
 	response := performRequestWithBody(router, http.MethodPost, "/nutrition/calculate", `{"food_id":1,"grams":56}`)
 	if response.Code != 200 || response.Body.String() != "{\"food_id\":1,\"resolved_grams\":56,\"nutrition\":{\"calories_kcal\":0,\"protein_g\":5.34,\"carbohydrates_g\":null,\"fat_g\":null}}\n" {
 		t.Fatalf("direct response = %d %q", response.Code, response.Body.String())
@@ -318,7 +318,7 @@ func TestNutritionDirectAndPortionRequests(t *testing.T) {
 func TestNutritionRejectsMalformedBoundedJSON(t *testing.T) {
 	t.Parallel()
 	calculator := &stubNutritionCalculator{}
-	router := NewRouter(discardLogger(), time.Second, func(context.Context) error { return nil }, &stubFoodSearcher{}, nil, calculator)
+	router := NewRouter(discardLogger(), time.Second, func(context.Context) error { return nil }, &stubFoodSearcher{}, nil, calculator, nil)
 	for _, body := range []string{
 		`{`,
 		`{"food_id":1,"grams":10,"unknown":true}`,
@@ -336,7 +336,7 @@ func TestNutritionPresenceValidationAndApplicationErrors(t *testing.T) {
 	t.Parallel()
 	repository := &httpNutritionRepository{source: canonicalNutritionSource(t)}
 	service := nutritioncalc.NewService(repository)
-	router := NewRouter(discardLogger(), time.Second, func(context.Context) error { return nil }, &stubFoodSearcher{}, nil, service)
+	router := NewRouter(discardLogger(), time.Second, func(context.Context) error { return nil }, &stubFoodSearcher{}, nil, service, nil)
 	for _, body := range []string{
 		`{"food_id":1,"grams":0}`,
 		`{"food_id":1}`,
@@ -353,7 +353,7 @@ func TestNutritionPresenceValidationAndApplicationErrors(t *testing.T) {
 		nutritioncalc.ErrPortionNotFound: "portion_not_found",
 	} {
 		calculator := &stubNutritionCalculator{err: err}
-		router := NewRouter(discardLogger(), time.Second, func(context.Context) error { return nil }, &stubFoodSearcher{}, nil, calculator)
+		router := NewRouter(discardLogger(), time.Second, func(context.Context) error { return nil }, &stubFoodSearcher{}, nil, calculator, nil)
 		response := performRequestWithBody(router, http.MethodPost, "/nutrition/calculate", `{"food_id":1,"grams":10}`)
 		if response.Code != 404 || response.Body.String() != "{\"status\":\""+wantStatus+"\"}\n" {
 			t.Errorf("error %v response = %d %q", err, response.Code, response.Body.String())
@@ -364,7 +364,7 @@ func TestNutritionPresenceValidationAndApplicationErrors(t *testing.T) {
 func TestNutritionMethodAndSanitizedInternalError(t *testing.T) {
 	t.Parallel()
 	calculator := &stubNutritionCalculator{err: errors.New("postgres relation food_nutrition password=secret")}
-	router := NewRouter(discardLogger(), time.Second, func(context.Context) error { return nil }, &stubFoodSearcher{}, nil, calculator)
+	router := NewRouter(discardLogger(), time.Second, func(context.Context) error { return nil }, &stubFoodSearcher{}, nil, calculator, nil)
 	response := performRequestWithBody(router, http.MethodPost, "/nutrition/calculate", `{"food_id":1,"grams":10}`)
 	if response.Code != 500 || response.Body.String() != "{\"status\":\"internal_error\"}\n" || strings.Contains(response.Body.String(), "postgres") {
 		t.Fatalf("internal response = %d %q", response.Code, response.Body.String())

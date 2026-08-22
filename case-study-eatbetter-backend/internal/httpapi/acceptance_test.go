@@ -49,7 +49,7 @@ func TestPhase6CoreAcceptanceFlow(t *testing.T) {
 	searchService := foodsearch.NewService(dbfoodsearch.New(pool))
 	detailService := fooddetail.NewService(dbfooddetail.New(pool))
 	calculationService := nutritioncalc.NewService(dbnutritioncalc.New(pool))
-	router := NewRouter(discardLogger(), time.Second, pool.Ping, searchService, detailService, calculationService)
+	router := NewRouter(discardLogger(), time.Second, pool.Ping, searchService, detailService, calculationService, nil)
 
 	searchResponse := performRequest(router, http.MethodGet, "/foods/search?q=banana&locale=en&limit=5")
 	if searchResponse.Code != 200 {

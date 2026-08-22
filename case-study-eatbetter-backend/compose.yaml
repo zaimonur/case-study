@@ -34,6 +34,9 @@ services:
       DB_MIN_CONNS: ${DB_MIN_CONNS:-1}
       DB_MAX_CONN_LIFETIME: ${DB_MAX_CONN_LIFETIME:-30m}
       DB_PING_TIMEOUT: ${DB_PING_TIMEOUT:-2s}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      GROQ_MODEL: ${GROQ_MODEL:-openai/gpt-oss-120b}
+      GROQ_TIMEOUT: ${GROQ_TIMEOUT:-10s}
     ports:
       - "${HTTP_PORT:-8080}:8080"
     depends_on:

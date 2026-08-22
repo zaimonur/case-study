@@ -7,22 +7,28 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net/http"
 
 	"github.com/zaimonur/case-study/case-study-eatbetter-backend/internal/application/foodamount"
+	"github.com/zaimonur/case-study/case-study-eatbetter-backend/internal/application/foodintent"
 	"github.com/zaimonur/case-study/case-study-eatbetter-backend/internal/application/mealai"
 )
 
-const mealInterpretRequestBodyLimit = 32 * 1024
+const (
+	mealInterpretRequestBodyLimit = 32 * 1024
+	mealResolveRequestBodyLimit   = 16 * 1024
+)
 
-// MealTextInterpreter is the initial meal interpretation application boundary.
-type MealTextInterpreter interface {
+// MealAIService is the initial and continuation meal AI application boundary.
+type MealAIService interface {
 	InterpretText(context.Context, mealai.Request) (mealai.Result, error)
+	ResolveSelection(context.Context, mealai.ResolveSelectionRequest) (mealai.ResolveSelectionResult, error)
 }
 
-var _ MealTextInterpreter = (*mealai.Service)(nil)
+var _ MealAIService = (*mealai.Service)(nil)
 
-func mealInterpretHandler(logger *slog.Logger, interpreter MealTextInterpreter) http.Handler {
+func mealInterpretHandler(logger *slog.Logger, interpreter MealAIService) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		r.Body = http.MaxBytesReader(w, r.Body, mealInterpretRequestBodyLimit)
 		decoder := json.NewDecoder(r.Body)
@@ -63,6 +69,54 @@ func mealInterpretHandler(logger *slog.Logger, interpreter MealTextInterpreter) 
 	})
 }
 
+func mealResolveHandler(logger *slog.Logger, service MealAIService) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r.Body = http.MaxBytesReader(w, r.Body, mealResolveRequestBodyLimit)
+		decoder := json.NewDecoder(r.Body)
+		decoder.DisallowUnknownFields()
+		var command mealResolveRequest
+		if err := decoder.Decode(&command); err != nil {
+			writeStatus(w, http.StatusBadRequest, "invalid_request")
+			return
+		}
+		var trailing any
+		if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+			writeStatus(w, http.StatusBadRequest, "invalid_request")
+			return
+		}
+		if service == nil {
+			logger.ErrorContext(r.Context(), "meal selection dependency unavailable",
+				"request_id", requestIDFromContext(r.Context()))
+			writeStatus(w, http.StatusInternalServerError, "internal_error")
+			return
+		}
+
+		result, err := service.ResolveSelection(r.Context(), mealai.ResolveSelectionRequest{
+			FoodID: command.FoodID, Locale: command.Locale,
+			Intent: mealIntent(command.Intent),
+			Choice: mealai.ExplicitChoice{
+				Kind: mealai.ChoiceKind(command.Choice.Kind), Grams: command.Choice.Grams,
+				PortionID: command.Choice.PortionID, Quantity: command.Choice.Quantity,
+			},
+		})
+		if err != nil {
+			statusCode, status, kind := mealInterpretErrorResponse(err)
+			logger.ErrorContext(r.Context(), "meal selection resolution failed",
+				"request_id", requestIDFromContext(r.Context()), "error_kind", kind)
+			writeStatus(w, statusCode, status)
+			return
+		}
+		response, err := mapMealResolveResult(result)
+		if err != nil {
+			logger.ErrorContext(r.Context(), "meal selection result was invalid",
+				"request_id", requestIDFromContext(r.Context()))
+			writeStatus(w, http.StatusInternalServerError, "internal_error")
+			return
+		}
+		writeJSON(w, http.StatusOK, response)
+	})
+}
+
 func mealInterpretErrorResponse(err error) (int, string, string) {
 	var applicationError *mealai.Error
 	kind := "unknown"
@@ -82,6 +136,10 @@ func mealInterpretErrorResponse(err error) (int, string, string) {
 		return http.StatusBadGateway, "ai_invalid_response", kind
 	case mealai.IsKind(err, mealai.ErrorAIFailure):
 		return http.StatusBadGateway, "ai_provider_error", kind
+	case mealai.IsKind(err, mealai.ErrorFoodNotFound):
+		return http.StatusNotFound, "food_not_found", kind
+	case mealai.IsKind(err, mealai.ErrorPortionNotFound):
+		return http.StatusNotFound, "portion_not_found", kind
 	case mealai.IsKind(err, mealai.ErrorTimeout):
 		return http.StatusGatewayTimeout, "dependency_timeout", kind
 	case mealai.IsKind(err, mealai.ErrorCanceled):
@@ -136,7 +194,7 @@ func mapMealInterpretItem(item mealai.Item) (mealInterpretItemResponse, error) {
 	}
 	switch item.State {
 	case mealai.ItemReady:
-		if item.Food == nil || item.Selection == nil || item.Clarification != nil {
+		if item.Food == nil || item.Selection == nil || item.Preview == nil || item.Clarification != nil {
 			return mealInterpretItemResponse{}, fmt.Errorf("malformed ready item")
 		}
 		foodResponse, err := mapResolvedFood(item.Food)
@@ -147,8 +205,15 @@ func mapMealInterpretItem(item mealai.Item) (mealInterpretItemResponse, error) {
 		if err != nil {
 			return mealInterpretItemResponse{}, err
 		}
-		response.Food, response.Selection = foodResponse, selection
+		preview, err := mapNutritionPreview(item.Preview)
+		if err != nil {
+			return mealInterpretItemResponse{}, err
+		}
+		response.Food, response.Selection, response.Preview = foodResponse, selection, preview
 	case mealai.ItemClarificationRequired:
+		if item.Preview != nil {
+			return mealInterpretItemResponse{}, fmt.Errorf("clarification has nutrition preview")
+		}
 		clarification, err := mapClarification(item)
 		if err != nil {
 			return mealInterpretItemResponse{}, err
@@ -164,6 +229,39 @@ func mapMealInterpretItem(item mealai.Item) (mealInterpretItemResponse, error) {
 		return mealInterpretItemResponse{}, fmt.Errorf("unknown item state")
 	}
 	return response, nil
+}
+
+func mapMealResolveResult(result mealai.ResolveSelectionResult) (mealResolveResponse, error) {
+	if result.Food == nil || (result.State == mealai.ItemClarificationRequired &&
+		(result.Clarification == nil || result.Clarification.Kind != mealai.ClarificationAmount)) {
+		return mealResolveResponse{}, fmt.Errorf("malformed continuation result")
+	}
+	item, err := mapMealInterpretItem(mealai.Item{
+		Intent: result.Intent, State: result.State, Food: result.Food,
+		Selection: result.Selection, Preview: result.Preview, Clarification: result.Clarification,
+	})
+	if err != nil {
+		return mealResolveResponse{}, err
+	}
+	return mealResolveResponse{
+		Intent: item.Intent, State: item.State, Food: item.Food,
+		Selection: item.Selection, Preview: item.Preview, Clarification: item.Clarification,
+	}, nil
+}
+
+func mapNutritionPreview(preview *mealai.NutritionPreview) (*nutritionPreviewResponse, error) {
+	if preview == nil || !finitePositiveMeal(preview.ResolvedGrams) {
+		return nil, fmt.Errorf("invalid nutrition preview")
+	}
+	return &nutritionPreviewResponse{
+		ResolvedGrams: preview.ResolvedGrams,
+		Nutrition: nutritionAmounts{
+			CaloriesKcal:   nutrientPointer(preview.Nutrition.Calories),
+			ProteinG:       nutrientPointer(preview.Nutrition.Protein),
+			CarbohydratesG: nutrientPointer(preview.Nutrition.Carbohydrates),
+			FatG:           nutrientPointer(preview.Nutrition.Fat),
+		},
+	}, nil
 }
 
 func mapResolvedFood(resolved *mealai.ResolvedFood) (*resolvedFoodResponse, error) {
@@ -255,7 +353,42 @@ type mealInterpretItemResponse struct {
 	State         string                     `json:"state"`
 	Food          *resolvedFoodResponse      `json:"food"`
 	Selection     *amountSelectionResponse   `json:"selection"`
+	Preview       *nutritionPreviewResponse  `json:"preview"`
 	Clarification *mealClarificationResponse `json:"clarification"`
+}
+
+type mealResolveRequest struct {
+	FoodID int64             `json:"food_id"`
+	Locale string            `json:"locale"`
+	Intent mealIntentRequest `json:"intent"`
+	Choice mealChoiceRequest `json:"choice"`
+}
+
+type mealIntentRequest struct {
+	Query    string   `json:"query"`
+	Quantity *float64 `json:"quantity"`
+	UnitHint *string  `json:"unit_hint"`
+}
+
+type mealChoiceRequest struct {
+	Kind      string   `json:"kind"`
+	Grams     *float64 `json:"grams"`
+	PortionID *int64   `json:"portion_id"`
+	Quantity  *float64 `json:"quantity"`
+}
+
+type mealResolveResponse struct {
+	Intent        mealIntentResponse         `json:"intent"`
+	State         string                     `json:"state"`
+	Food          *resolvedFoodResponse      `json:"food"`
+	Selection     *amountSelectionResponse   `json:"selection"`
+	Preview       *nutritionPreviewResponse  `json:"preview"`
+	Clarification *mealClarificationResponse `json:"clarification"`
+}
+
+type nutritionPreviewResponse struct {
+	ResolvedGrams float64          `json:"resolved_grams"`
+	Nutrition     nutritionAmounts `json:"nutrition"`
 }
 
 type mealIntentResponse struct {
@@ -299,4 +432,12 @@ type mealClarificationResponse struct {
 	Candidates       []foodOptionResponse `json:"candidates"`
 	Portions         []portionResponse    `json:"portions"`
 	AllowDirectGrams bool                 `json:"allow_direct_grams"`
+}
+
+func mealIntent(request mealIntentRequest) foodintent.FoodIntent {
+	return foodintent.FoodIntent{Query: request.Query, Quantity: request.Quantity, UnitHint: request.UnitHint}
+}
+
+func finitePositiveMeal(value float64) bool {
+	return !math.IsNaN(value) && !math.IsInf(value, 0) && value > 0
 }

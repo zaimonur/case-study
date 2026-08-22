@@ -45,7 +45,7 @@ func NewRouter(
 	search FoodSearcher,
 	detail FoodDetailer,
 	calculator NutritionCalculator,
-	mealInterpreter MealTextInterpreter,
+	mealAIService MealAIService,
 ) http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("/health", getOnly(http.HandlerFunc(healthHandler)))
@@ -53,7 +53,8 @@ func NewRouter(
 	mux.Handle("/foods/search", getOnly(searchHandler(logger, search)))
 	mux.Handle("/foods/", getOnly(foodDetailHandler(logger, detail)))
 	mux.Handle("/nutrition/calculate", postOnly(nutritionHandler(logger, calculator)))
-	mux.Handle("/ai/meals/interpret", postOnly(mealInterpretHandler(logger, mealInterpreter)))
+	mux.Handle("/ai/meals/interpret", postOnly(mealInterpretHandler(logger, mealAIService)))
+	mux.Handle("/ai/meals/resolve", postOnly(mealResolveHandler(logger, mealAIService)))
 
 	return withRequestID(withAccessLog(logger, withRecovery(logger, mux)))
 }

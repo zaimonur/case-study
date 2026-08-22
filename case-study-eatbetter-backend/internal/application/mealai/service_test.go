@@ -3,14 +3,17 @@ package mealai
 import (
 	"context"
 	"errors"
+	"math"
 	"reflect"
 	"testing"
 
 	"github.com/zaimonur/case-study/case-study-eatbetter-backend/internal/application/foodamount"
+	"github.com/zaimonur/case-study/case-study-eatbetter-backend/internal/application/fooddetail"
 	"github.com/zaimonur/case-study/case-study-eatbetter-backend/internal/application/foodextraction"
 	"github.com/zaimonur/case-study/case-study-eatbetter-backend/internal/application/foodintent"
 	"github.com/zaimonur/case-study/case-study-eatbetter-backend/internal/application/foodresolver"
 	"github.com/zaimonur/case-study/case-study-eatbetter-backend/internal/application/foodsearch"
+	"github.com/zaimonur/case-study/case-study-eatbetter-backend/internal/application/nutritioncalc"
 	"github.com/zaimonur/case-study/case-study-eatbetter-backend/internal/domain/food"
 )
 
@@ -49,11 +52,75 @@ func (fake *fakeFoodResolver) Resolve(ctx context.Context, request foodresolver.
 }
 
 type fakeAmountResolver struct {
-	results  []foodamount.Resolution
+	results         []foodamount.Resolution
+	errs            []error
+	calls           int
+	requests        []foodamount.Request
+	contexts        []context.Context
+	portionResults  []foodamount.Resolution
+	portionErrs     []error
+	portionCalls    int
+	portionRequests []foodamount.PortionSelectionRequest
+	portionContexts []context.Context
+}
+
+func (fake *fakeAmountResolver) ResolvePortionSelection(ctx context.Context, request foodamount.PortionSelectionRequest) (foodamount.Resolution, error) {
+	index := fake.portionCalls
+	fake.portionCalls++
+	fake.portionRequests = append(fake.portionRequests, request)
+	fake.portionContexts = append(fake.portionContexts, ctx)
+	if index < len(fake.portionErrs) && fake.portionErrs[index] != nil {
+		return foodamount.Resolution{}, fake.portionErrs[index]
+	}
+	if index >= len(fake.portionResults) {
+		return foodamount.Resolution{}, errors.New("unexpected portion selection")
+	}
+	return fake.portionResults[index], nil
+}
+
+type fakeFoodDetailer struct {
+	detail   fooddetail.Detail
+	err      error
+	calls    int
+	requests []fooddetail.Request
+	contexts []context.Context
+}
+
+func (fake *fakeFoodDetailer) Get(ctx context.Context, request fooddetail.Request) (fooddetail.Detail, error) {
+	fake.calls++
+	fake.requests = append(fake.requests, request)
+	fake.contexts = append(fake.contexts, ctx)
+	return fake.detail, fake.err
+}
+
+type fakeNutritionCalculator struct {
+	results  []nutritioncalc.Result
 	errs     []error
 	calls    int
-	requests []foodamount.Request
+	requests []nutritioncalc.Request
 	contexts []context.Context
+}
+
+func (fake *fakeNutritionCalculator) Calculate(ctx context.Context, request nutritioncalc.Request) (nutritioncalc.Result, error) {
+	index := fake.calls
+	fake.calls++
+	fake.requests = append(fake.requests, request)
+	fake.contexts = append(fake.contexts, ctx)
+	if index < len(fake.errs) && fake.errs[index] != nil {
+		return nutritioncalc.Result{}, fake.errs[index]
+	}
+	if index < len(fake.results) {
+		return fake.results[index], nil
+	}
+	resolvedGrams := 1.0
+	if request.Grams != nil {
+		resolvedGrams = *request.Grams
+	}
+	return nutritioncalc.Result{FoodID: request.FoodID, ResolvedGrams: resolvedGrams}, nil
+}
+
+func newTestService(extractor TextExtractor, resolver FoodResolver, amount AmountResolver) *Service {
+	return NewService(extractor, resolver, amount, &fakeFoodDetailer{}, &fakeNutritionCalculator{})
 }
 
 func (fake *fakeAmountResolver) Resolve(ctx context.Context, request foodamount.Request) (foodamount.Resolution, error) {
@@ -71,7 +138,7 @@ func TestInterpretTextValidatesLocaleBeforeExtraction(t *testing.T) {
 	t.Parallel()
 
 	extractor := &fakeTextExtractor{}
-	result, err := NewService(extractor, &fakeFoodResolver{}, &fakeAmountResolver{}).InterpretText(context.Background(), Request{
+	result, err := newTestService(extractor, &fakeFoodResolver{}, &fakeAmountResolver{}).InterpretText(context.Background(), Request{
 		Text: "elma", Locale: "tr_TR",
 	})
 	if !IsKind(err, ErrorInvalidInput) {
@@ -89,7 +156,7 @@ func TestInterpretTextEmptyExtraction(t *testing.T) {
 	extractor := &fakeTextExtractor{result: foodextraction.TextFoodExtraction{}}
 	resolver := &fakeFoodResolver{}
 	amount := &fakeAmountResolver{}
-	result, err := NewService(extractor, resolver, amount).InterpretText(context.Background(), Request{Text: "hiçbir şey yemedim"})
+	result, err := newTestService(extractor, resolver, amount).InterpretText(context.Background(), Request{Text: "hiçbir şey yemedim"})
 	if err != nil {
 		t.Fatalf("InterpretText: %v", err)
 	}
@@ -128,8 +195,9 @@ func TestInterpretTextMixedMealPreservesOrderAndContinuesAfterClarification(t *t
 	}}}
 	type contextKey string
 	ctx := context.WithValue(context.Background(), contextKey("request"), "same")
+	calculator := &fakeNutritionCalculator{}
 
-	result, err := NewService(extractor, resolver, amount).InterpretText(ctx, Request{Text: "source", Locale: "TR-tr"})
+	result, err := NewService(extractor, resolver, amount, &fakeFoodDetailer{}, calculator).InterpretText(ctx, Request{Text: "source", Locale: "TR-tr"})
 	if err != nil {
 		t.Fatalf("InterpretText: %v", err)
 	}
@@ -144,6 +212,9 @@ func TestInterpretTextMixedMealPreservesOrderAndContinuesAfterClarification(t *t
 	}
 	if amount.calls != 1 || resolver.calls != 2 || extractor.calls != 1 {
 		t.Fatalf("calls extractor/resolver/amount = %d/%d/%d", extractor.calls, resolver.calls, amount.calls)
+	}
+	if calculator.calls != 1 || result.Items[0].Preview != nil || result.Items[1].Preview == nil {
+		t.Fatalf("calculator calls/previews = %d/%#v/%#v", calculator.calls, result.Items[0].Preview, result.Items[1].Preview)
 	}
 	if !reflect.DeepEqual(result.Items[0].Intent, firstIntent) || !reflect.DeepEqual(result.Items[1].Intent, secondIntent) {
 		t.Fatal("validated intents were changed")
@@ -182,7 +253,7 @@ func TestInterpretTextRepeatedMentionsRemainSeparateAndAllReady(t *testing.T) {
 	amount := &fakeAmountResolver{results: []foodamount.Resolution{
 		resolvedGrams(1, 2), resolvedGrams(1, 2),
 	}}
-	result, err := NewService(extractor, resolver, amount).InterpretText(context.Background(), Request{Text: "yumurta yumurta", Locale: "tr"})
+	result, err := newTestService(extractor, resolver, amount).InterpretText(context.Background(), Request{Text: "yumurta yumurta", Locale: "tr"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -195,6 +266,66 @@ func TestInterpretTextRepeatedMentionsRemainSeparateAndAllReady(t *testing.T) {
 	assertResultInvariants(t, result)
 }
 
+func TestInterpretTextCalculatesReadyPreviewsSequentiallyFromSelections(t *testing.T) {
+	t.Parallel()
+
+	extractor := twoItemExtractor()
+	resolver := &fakeFoodResolver{results: []foodresolver.Resolution{
+		resolvedIdentity(1, "First", "First", nil), resolvedIdentity(2, "Second", "Second", nil),
+	}}
+	portion := &foodamount.Selection{
+		Kind: foodamount.SelectionPortion, FoodID: 2,
+		Portion: &foodamount.PortionSelection{
+			PortionID: 9, Quantity: 3, Amount: 1, Measure: "adet", PortionGrams: 40,
+		},
+	}
+	amount := &fakeAmountResolver{results: []foodamount.Resolution{
+		resolvedGrams(1, 25),
+		{State: foodamount.StateResolved, Reason: foodamount.ReasonExplicitPortionSelection, Selection: portion},
+	}}
+	calculator := &fakeNutritionCalculator{results: []nutritioncalc.Result{
+		{FoodID: 1, ResolvedGrams: 25}, {FoodID: 2, ResolvedGrams: 119.75},
+	}}
+	result, err := NewService(extractor, resolver, amount, &fakeFoodDetailer{}, calculator).
+		InterpretText(context.Background(), Request{Text: "meal", Locale: "tr"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.State != StateReady || len(result.Items) != 2 || result.Items[0].Preview.ResolvedGrams != 25 || result.Items[1].Preview.ResolvedGrams != 119.75 {
+		t.Fatalf("result = %#v", result)
+	}
+	if calculator.calls != 2 {
+		t.Fatalf("calculator calls = %d", calculator.calls)
+	}
+	first, second := calculator.requests[0], calculator.requests[1]
+	if first.FoodID != 1 || first.Grams == nil || *first.Grams != 25 || first.PortionID != nil || first.Quantity != nil {
+		t.Fatalf("first nutrition request = %#v", first)
+	}
+	if second.FoodID != 2 || second.Grams != nil || second.PortionID == nil || *second.PortionID != 9 || second.Quantity == nil || *second.Quantity != 3 {
+		t.Fatalf("second nutrition request = %#v", second)
+	}
+	assertResultInvariants(t, result)
+}
+
+func TestInterpretTextLaterNutritionFailureDiscardsAllItems(t *testing.T) {
+	t.Parallel()
+
+	cause := errors.New("nutrition storage failed")
+	result, err := NewService(
+		twoItemExtractor(),
+		&fakeFoodResolver{results: []foodresolver.Resolution{
+			resolvedIdentity(1, "First", "First", nil), resolvedIdentity(2, "Second", "Second", nil),
+		}},
+		&fakeAmountResolver{results: []foodamount.Resolution{resolvedGrams(1, 10), resolvedGrams(2, 20)}},
+		&fakeFoodDetailer{},
+		&fakeNutritionCalculator{results: []nutritioncalc.Result{{FoodID: 1, ResolvedGrams: 10}}, errs: []error{nil, cause}},
+	).InterpretText(context.Background(), Request{Text: "meal", Locale: "tr"})
+	if !IsKind(err, ErrorResolutionFailure) || !errors.Is(err, cause) {
+		t.Fatalf("error = %v", err)
+	}
+	assertZeroResult(t, result)
+}
+
 func TestInterpretTextNotFoundIsFoodClarificationWithoutAmountCall(t *testing.T) {
 	t.Parallel()
 
@@ -204,7 +335,7 @@ func TestInterpretTextNotFoundIsFoodClarificationWithoutAmountCall(t *testing.T)
 		Candidates: []foodsearch.FoodCandidate{},
 	}}}
 	amount := &fakeAmountResolver{}
-	result, err := NewService(extractor, resolver, amount).InterpretText(context.Background(), Request{Text: "elma", Locale: "tr"})
+	result, err := newTestService(extractor, resolver, amount).InterpretText(context.Background(), Request{Text: "elma", Locale: "tr"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -223,6 +354,7 @@ func TestInterpretTextAmountClarificationPreservesPortions(t *testing.T) {
 		{ID: 1, FoodID: 8, Amount: 1, Measure: "first", Grams: 10},
 	}
 	amountClarification := &foodamount.Clarification{Portions: portions, AllowDirectGrams: true}
+	calculator := &fakeNutritionCalculator{}
 	result, err := NewService(
 		oneItemExtractor(),
 		&fakeFoodResolver{results: []foodresolver.Resolution{resolvedIdentity(8, "Elma", "Apple", nil)}},
@@ -230,6 +362,7 @@ func TestInterpretTextAmountClarificationPreservesPortions(t *testing.T) {
 			State: foodamount.StateClarificationRequired, Reason: foodamount.ReasonUnitRequired,
 			Clarification: amountClarification,
 		}}},
+		&fakeFoodDetailer{}, calculator,
 	).InterpretText(context.Background(), Request{Text: "elma", Locale: "tr"})
 	if err != nil {
 		t.Fatal(err)
@@ -237,6 +370,9 @@ func TestInterpretTextAmountClarificationPreservesPortions(t *testing.T) {
 	item := result.Items[0]
 	if item.Food == nil || item.Selection != nil || item.Clarification.Kind != ClarificationAmount || item.Clarification.Candidates == nil || len(item.Clarification.Candidates) != 0 || !reflect.DeepEqual(item.Clarification.Portions, portions) {
 		t.Fatalf("item = %#v", item)
+	}
+	if calculator.calls != 0 {
+		t.Fatalf("calculator calls = %d, want 0", calculator.calls)
 	}
 	assertResultInvariants(t, result)
 }
@@ -278,7 +414,7 @@ func TestInterpretTextOperationalFailuresDiscardPartialResult(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			result, err := NewService(tt.extractor, tt.resolver, tt.amount).InterpretText(context.Background(), Request{Text: "meal", Locale: "tr"})
+			result, err := newTestService(tt.extractor, tt.resolver, tt.amount).InterpretText(context.Background(), Request{Text: "meal", Locale: "tr"})
 			if !IsKind(err, tt.wantKind) {
 				t.Fatalf("error = %v, want %s", err, tt.wantKind)
 			}
@@ -301,7 +437,7 @@ func TestInterpretTextRejectsMalformedFoodResolution(t *testing.T) {
 	}
 	for _, malformed := range tests {
 		resolver := &fakeFoodResolver{results: []foodresolver.Resolution{malformed}}
-		result, err := NewService(oneItemExtractor(), resolver, &fakeAmountResolver{}).InterpretText(context.Background(), Request{Text: "food"})
+		result, err := newTestService(oneItemExtractor(), resolver, &fakeAmountResolver{}).InterpretText(context.Background(), Request{Text: "food"})
 		if !IsKind(err, ErrorResolutionFailure) {
 			t.Errorf("resolution %#v error = %v", malformed, err)
 		}
@@ -318,13 +454,19 @@ func TestInterpretTextRejectsMalformedAmountResolution(t *testing.T) {
 		{State: foodamount.StateResolved},
 		{State: foodamount.StateResolved, Selection: validSelection, Clarification: validClarification},
 		{State: foodamount.StateResolved, Selection: &foodamount.Selection{Kind: foodamount.SelectionKind("future"), FoodID: 1}},
+		{State: foodamount.StateResolved, Selection: &foodamount.Selection{Kind: foodamount.SelectionGrams, FoodID: 2, Grams: &foodamount.GramsSelection{Grams: 10}}},
+		{State: foodamount.StateResolved, Selection: &foodamount.Selection{Kind: foodamount.SelectionGrams, FoodID: 1, Grams: &foodamount.GramsSelection{Grams: math.NaN()}}},
+		{State: foodamount.StateResolved, Selection: malformedPortionSelection(0, 1, "adet", 50)},
+		{State: foodamount.StateResolved, Selection: malformedPortionSelection(1, 0, "adet", 50)},
+		{State: foodamount.StateResolved, Selection: malformedPortionSelection(1, 1, "  ", 50)},
+		{State: foodamount.StateResolved, Selection: malformedPortionSelection(1, 1, "adet", 0)},
 		{State: foodamount.StateClarificationRequired},
 		{State: foodamount.StateClarificationRequired, Selection: validSelection, Clarification: validClarification},
 		{State: foodamount.StateClarificationRequired, Clarification: &foodamount.Clarification{Portions: nil, AllowDirectGrams: true}},
 		{State: foodamount.State("future")},
 	}
 	for _, malformed := range tests {
-		result, err := NewService(
+		result, err := newTestService(
 			oneItemExtractor(),
 			&fakeFoodResolver{results: []foodresolver.Resolution{resolvedIdentity(1, "Food", "Food", nil)}},
 			&fakeAmountResolver{results: []foodamount.Resolution{malformed}},
@@ -379,12 +521,55 @@ func TestInterpretTextMapsDependencyErrors(t *testing.T) {
 			case tt.amount != nil:
 				amount.errs, cause = []error{tt.amount}, tt.amount
 			}
-			result, err := NewService(extractor, resolver, amount).InterpretText(context.Background(), Request{Text: "food"})
+			result, err := newTestService(extractor, resolver, amount).InterpretText(context.Background(), Request{Text: "food"})
 			if !IsKind(err, tt.wantKind) {
 				t.Fatalf("error = %v, want %s", err, tt.wantKind)
 			}
 			if !errors.Is(err, cause) {
 				t.Fatalf("error does not preserve cause %v", cause)
+			}
+			assertZeroResult(t, result)
+		})
+	}
+}
+
+func TestInterpretTextMapsNutritionFailuresAndRejectsMalformedResults(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		result   nutritioncalc.Result
+		err      error
+		wantKind ErrorKind
+	}{
+		{name: "validation", err: &nutritioncalc.ValidationError{Field: "grams"}, wantKind: ErrorInvalidInput},
+		{name: "operational", err: errors.New("storage"), wantKind: ErrorResolutionFailure},
+		{name: "canceled", err: context.Canceled, wantKind: ErrorCanceled},
+		{name: "timeout", err: context.DeadlineExceeded, wantKind: ErrorTimeout},
+		{name: "food mismatch", result: nutritioncalc.Result{FoodID: 2, ResolvedGrams: 10}, wantKind: ErrorResolutionFailure},
+		{name: "zero grams", result: nutritioncalc.Result{FoodID: 1, ResolvedGrams: 0}, wantKind: ErrorResolutionFailure},
+		{name: "non-finite grams", result: nutritioncalc.Result{FoodID: 1, ResolvedGrams: math.Inf(1)}, wantKind: ErrorResolutionFailure},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			calculator := &fakeNutritionCalculator{results: []nutritioncalc.Result{test.result}}
+			if test.err != nil {
+				calculator.errs = []error{test.err}
+			}
+			result, err := NewService(
+				oneItemExtractor(),
+				&fakeFoodResolver{results: []foodresolver.Resolution{resolvedIdentity(1, "Food", "Food", nil)}},
+				&fakeAmountResolver{results: []foodamount.Resolution{resolvedGrams(1, 10)}},
+				&fakeFoodDetailer{}, calculator,
+			).InterpretText(context.Background(), Request{Text: "food", Locale: "tr"})
+			if !IsKind(err, test.wantKind) {
+				t.Fatalf("error = %v, want %s", err, test.wantKind)
+			}
+			if test.err != nil && !errors.Is(err, test.err) {
+				t.Fatalf("error does not preserve %v", test.err)
+			}
+			if calculator.calls != 1 {
+				t.Fatalf("calculator calls = %d", calculator.calls)
 			}
 			assertZeroResult(t, result)
 		})
@@ -431,11 +616,11 @@ func assertItemInvariants(t *testing.T, item Item) {
 	t.Helper()
 	switch item.State {
 	case ItemReady:
-		if item.Food == nil || item.Selection == nil || item.Clarification != nil {
+		if item.Food == nil || item.Selection == nil || item.Preview == nil || item.Clarification != nil {
 			t.Fatalf("invalid ready item: %#v", item)
 		}
 	case ItemClarificationRequired:
-		if item.Selection != nil || item.Clarification == nil || item.Clarification.Candidates == nil || item.Clarification.Portions == nil {
+		if item.Selection != nil || item.Preview != nil || item.Clarification == nil || item.Clarification.Candidates == nil || item.Clarification.Portions == nil {
 			t.Fatalf("invalid clarification item: %#v", item)
 		}
 		if item.Clarification.Kind == ClarificationFoodIdentity {
@@ -488,6 +673,15 @@ func resolvedGrams(foodID int64, grams float64) foodamount.Resolution {
 		Selection: &foodamount.Selection{
 			Kind: foodamount.SelectionGrams, FoodID: foodID,
 			Grams: &foodamount.GramsSelection{Grams: grams},
+		},
+	}
+}
+
+func malformedPortionSelection(quantity, amount float64, measure string, portionGrams float64) *foodamount.Selection {
+	return &foodamount.Selection{
+		Kind: foodamount.SelectionPortion, FoodID: 1,
+		Portion: &foodamount.PortionSelection{
+			PortionID: 9, Quantity: quantity, Amount: amount, Measure: measure, PortionGrams: portionGrams,
 		},
 	}
 }

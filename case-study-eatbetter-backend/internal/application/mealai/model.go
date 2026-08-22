@@ -5,9 +5,11 @@ import (
 	"context"
 
 	"github.com/zaimonur/case-study/case-study-eatbetter-backend/internal/application/foodamount"
+	"github.com/zaimonur/case-study/case-study-eatbetter-backend/internal/application/fooddetail"
 	"github.com/zaimonur/case-study/case-study-eatbetter-backend/internal/application/foodextraction"
 	"github.com/zaimonur/case-study/case-study-eatbetter-backend/internal/application/foodintent"
 	"github.com/zaimonur/case-study/case-study-eatbetter-backend/internal/application/foodresolver"
+	"github.com/zaimonur/case-study/case-study-eatbetter-backend/internal/application/nutritioncalc"
 	"github.com/zaimonur/case-study/case-study-eatbetter-backend/internal/domain/food"
 )
 
@@ -55,7 +57,14 @@ type Item struct {
 	State         ItemState
 	Food          *ResolvedFood
 	Selection     *foodamount.Selection
+	Preview       *NutritionPreview
 	Clarification *Clarification
+}
+
+// NutritionPreview is the trusted deterministic nutrition for one selection.
+type NutritionPreview struct {
+	ResolvedGrams float64
+	Nutrition     nutritioncalc.Nutrition
 }
 
 // ResolvedFood is a product-facing canonical identity snapshot.
@@ -96,4 +105,53 @@ type FoodResolver interface {
 // AmountResolver is the Task 3 initial amount-resolution boundary.
 type AmountResolver interface {
 	Resolve(context.Context, foodamount.Request) (foodamount.Resolution, error)
+	ResolvePortionSelection(context.Context, foodamount.PortionSelectionRequest) (foodamount.Resolution, error)
+}
+
+// FoodDetailer is the canonical detail boundary used by continuation requests.
+type FoodDetailer interface {
+	Get(context.Context, fooddetail.Request) (fooddetail.Detail, error)
+}
+
+// NutritionCalculator is the deterministic nutrition boundary.
+type NutritionCalculator interface {
+	Calculate(context.Context, nutritioncalc.Request) (nutritioncalc.Result, error)
+}
+
+// ExplicitChoiceKind identifies the explicit continuation action selected by the client.
+type ExplicitChoiceKind string
+
+// ChoiceKind is a concise alias retained for call sites that construct choices.
+type ChoiceKind = ExplicitChoiceKind
+
+const (
+	ChoiceFoodIdentity ExplicitChoiceKind = "food_identity"
+	ChoiceGrams        ExplicitChoiceKind = "grams"
+	ChoicePortion      ExplicitChoiceKind = "portion"
+)
+
+// ExplicitChoice contains exactly the fields required by its kind.
+type ExplicitChoice struct {
+	Kind      ExplicitChoiceKind
+	Grams     *float64
+	PortionID *int64
+	Quantity  *float64
+}
+
+// ResolveSelectionRequest resumes one item from explicit client state.
+type ResolveSelectionRequest struct {
+	FoodID int64
+	Locale string
+	Intent foodintent.FoodIntent
+	Choice ExplicitChoice
+}
+
+// ResolveSelectionResult contains one stateless continuation outcome.
+type ResolveSelectionResult struct {
+	Intent        foodintent.FoodIntent
+	State         ItemState
+	Food          *ResolvedFood
+	Selection     *foodamount.Selection
+	Preview       *NutritionPreview
+	Clarification *Clarification
 }

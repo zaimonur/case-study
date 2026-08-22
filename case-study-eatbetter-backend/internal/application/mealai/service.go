@@ -2,32 +2,43 @@ package mealai
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
+	"strings"
 
 	"github.com/zaimonur/case-study/case-study-eatbetter-backend/internal/application/foodamount"
+	"github.com/zaimonur/case-study/case-study-eatbetter-backend/internal/application/fooddetail"
 	"github.com/zaimonur/case-study/case-study-eatbetter-backend/internal/application/foodextraction"
 	"github.com/zaimonur/case-study/case-study-eatbetter-backend/internal/application/foodlocale"
 	"github.com/zaimonur/case-study/case-study-eatbetter-backend/internal/application/foodresolver"
 	"github.com/zaimonur/case-study/case-study-eatbetter-backend/internal/application/foodsearch"
+	"github.com/zaimonur/case-study/case-study-eatbetter-backend/internal/application/nutritioncalc"
 	"github.com/zaimonur/case-study/case-study-eatbetter-backend/internal/domain/food"
 )
 
 var (
-	_ TextExtractor  = (*foodextraction.Service)(nil)
-	_ FoodResolver   = (*foodresolver.Service)(nil)
-	_ AmountResolver = (*foodamount.Service)(nil)
+	_ TextExtractor       = (*foodextraction.Service)(nil)
+	_ FoodResolver        = (*foodresolver.Service)(nil)
+	_ AmountResolver      = (*foodamount.Service)(nil)
+	_ FoodDetailer        = (*fooddetail.Service)(nil)
+	_ NutritionCalculator = (*nutritioncalc.Service)(nil)
 )
 
 // Service coordinates extraction, identity resolution, and amount resolution.
 type Service struct {
-	extractor      TextExtractor
-	foodResolver   FoodResolver
-	amountResolver AmountResolver
+	extractor           TextExtractor
+	foodResolver        FoodResolver
+	amountResolver      AmountResolver
+	foodDetailer        FoodDetailer
+	nutritionCalculator NutritionCalculator
 }
 
-func NewService(extractor TextExtractor, foodResolver FoodResolver, amountResolver AmountResolver) *Service {
-	return &Service{extractor: extractor, foodResolver: foodResolver, amountResolver: amountResolver}
+func NewService(extractor TextExtractor, foodResolver FoodResolver, amountResolver AmountResolver, foodDetailer FoodDetailer, nutritionCalculator NutritionCalculator) *Service {
+	return &Service{
+		extractor: extractor, foodResolver: foodResolver, amountResolver: amountResolver,
+		foodDetailer: foodDetailer, nutritionCalculator: nutritionCalculator,
+	}
 }
 
 // InterpretText returns a stable initial interpretation without persistence.
@@ -76,8 +87,13 @@ func (s *Service) InterpretText(ctx context.Context, request Request) (Result, e
 				return Result{}, newError(ErrorResolutionFailure, err)
 			}
 			if amount.State == foodamount.StateResolved {
+				preview, err := s.calculatePreview(ctx, amount.Selection)
+				if err != nil {
+					return Result{}, err
+				}
 				item.State = ItemReady
 				item.Selection = amount.Selection
+				item.Preview = preview
 			} else {
 				item.State = ItemClarificationRequired
 				item.Clarification = &Clarification{
@@ -131,6 +147,9 @@ func validateAmountResolution(resolution foodamount.Resolution, foodID int64) er
 }
 
 func validateSelection(selection *foodamount.Selection) error {
+	if selection == nil {
+		return fmt.Errorf("selection is missing")
+	}
 	if selection.FoodID <= 0 {
 		return fmt.Errorf("selection has invalid food identity")
 	}
@@ -140,13 +159,59 @@ func validateSelection(selection *foodamount.Selection) error {
 			return fmt.Errorf("malformed grams selection")
 		}
 	case foodamount.SelectionPortion:
-		if selection.Grams != nil || selection.Portion == nil || selection.Portion.PortionID <= 0 || !finitePositive(selection.Portion.Quantity) {
+		if selection.Grams != nil || selection.Portion == nil || selection.Portion.PortionID <= 0 ||
+			!finitePositive(selection.Portion.Quantity) || !finitePositive(selection.Portion.Amount) ||
+			strings.TrimSpace(selection.Portion.Measure) == "" || !finitePositive(selection.Portion.PortionGrams) {
 			return fmt.Errorf("malformed portion selection")
 		}
 	default:
 		return fmt.Errorf("unknown selection kind")
 	}
 	return nil
+}
+
+func (s *Service) calculatePreview(ctx context.Context, selection *foodamount.Selection) (*NutritionPreview, error) {
+	request, err := nutritionRequest(selection)
+	if err != nil {
+		return nil, newError(ErrorResolutionFailure, err)
+	}
+	result, err := s.nutritionCalculator.Calculate(ctx, request)
+	if err != nil {
+		return nil, mapNutritionError(err)
+	}
+	if result.FoodID != selection.FoodID || !finitePositive(result.ResolvedGrams) {
+		return nil, newError(ErrorResolutionFailure, fmt.Errorf("malformed nutrition result"))
+	}
+	return &NutritionPreview{ResolvedGrams: result.ResolvedGrams, Nutrition: result.Nutrition}, nil
+}
+
+func nutritionRequest(selection *foodamount.Selection) (nutritioncalc.Request, error) {
+	if err := validateSelection(selection); err != nil {
+		return nutritioncalc.Request{}, err
+	}
+	request := nutritioncalc.Request{FoodID: selection.FoodID}
+	switch selection.Kind {
+	case foodamount.SelectionGrams:
+		grams := selection.Grams.Grams
+		request.Grams = &grams
+	case foodamount.SelectionPortion:
+		portionID, quantity := selection.Portion.PortionID, selection.Portion.Quantity
+		request.PortionID, request.Quantity = &portionID, &quantity
+	}
+	return request, nil
+}
+
+func mapNutritionError(err error) error {
+	switch {
+	case nutritioncalc.IsValidationError(err):
+		return newError(ErrorInvalidInput, err)
+	case errors.Is(err, context.Canceled):
+		return newError(ErrorCanceled, err)
+	case errors.Is(err, context.DeadlineExceeded):
+		return newError(ErrorTimeout, err)
+	default:
+		return newError(ErrorResolutionFailure, err)
+	}
 }
 
 func finitePositive(value float64) bool {

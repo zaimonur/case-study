@@ -69,7 +69,9 @@ func run() error {
 		}
 	}
 	extractionService := foodextraction.NewService(textExtractor)
-	mealAIService := mealai.NewService(extractionService, foodResolverService, foodAmountService)
+	mealAIService := mealai.NewService(
+		extractionService, foodResolverService, foodAmountService, foodDetailService, nutritionService,
+	)
 	handler := httpapi.NewRouter(
 		logger, cfg.Database.PingTimeout, pool.Ping,
 		foodSearchService, foodDetailService, nutritionService, mealAIService,

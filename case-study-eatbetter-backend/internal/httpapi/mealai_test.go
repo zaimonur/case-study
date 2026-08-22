@@ -12,18 +12,47 @@ import (
 	"time"
 
 	"github.com/zaimonur/case-study/case-study-eatbetter-backend/internal/application/foodamount"
+	"github.com/zaimonur/case-study/case-study-eatbetter-backend/internal/application/fooddetail"
 	"github.com/zaimonur/case-study/case-study-eatbetter-backend/internal/application/foodextraction"
 	"github.com/zaimonur/case-study/case-study-eatbetter-backend/internal/application/foodintent"
 	"github.com/zaimonur/case-study/case-study-eatbetter-backend/internal/application/mealai"
+	"github.com/zaimonur/case-study/case-study-eatbetter-backend/internal/application/nutritioncalc"
 	"github.com/zaimonur/case-study/case-study-eatbetter-backend/internal/domain/food"
 )
 
 type stubMealTextInterpreter struct {
-	request mealai.Request
-	result  mealai.Result
-	err     error
-	calls   int
-	ctx     context.Context
+	request        mealai.Request
+	result         mealai.Result
+	err            error
+	calls          int
+	ctx            context.Context
+	resolveRequest mealai.ResolveSelectionRequest
+	resolveResult  mealai.ResolveSelectionResult
+	resolveErr     error
+	resolveCalls   int
+}
+
+type deterministicMealAmountResolver struct{}
+
+func (*deterministicMealAmountResolver) Resolve(_ context.Context, request foodamount.Request) (foodamount.Resolution, error) {
+	return foodamount.Resolution{
+		State: foodamount.StateResolved, Reason: foodamount.ReasonExplicitGrams,
+		Selection: &foodamount.Selection{
+			Kind: foodamount.SelectionGrams, FoodID: request.FoodID,
+			Grams: &foodamount.GramsSelection{Grams: *request.Intent.Quantity},
+		},
+	}, nil
+}
+
+func (*deterministicMealAmountResolver) ResolvePortionSelection(context.Context, foodamount.PortionSelectionRequest) (foodamount.Resolution, error) {
+	return foodamount.Resolution{}, errors.New("unexpected portion selection")
+}
+
+func (stub *stubMealTextInterpreter) ResolveSelection(ctx context.Context, request mealai.ResolveSelectionRequest) (mealai.ResolveSelectionResult, error) {
+	stub.resolveCalls++
+	stub.ctx = ctx
+	stub.resolveRequest = request
+	return stub.resolveResult, stub.resolveErr
 }
 
 func (stub *stubMealTextInterpreter) InterpretText(ctx context.Context, request mealai.Request) (mealai.Result, error) {
@@ -126,7 +155,7 @@ func TestMealInterpretMapsApplicationErrorsWithoutLeaks(t *testing.T) {
 func TestMealInterpretWithoutConfiguredExtractorReturnsAIUnavailable(t *testing.T) {
 	t.Parallel()
 
-	service := mealai.NewService(foodextraction.NewService(nil), nil, nil)
+	service := mealai.NewService(foodextraction.NewService(nil), nil, nil, nil, nil)
 	response := performRequestWithBody(mealRouter(service), http.MethodPost, "/ai/meals/interpret", `{"text":"elma","locale":"tr"}`)
 	if response.Code != http.StatusServiceUnavailable || response.Body.String() != "{\"status\":\"ai_unavailable\"}\n" {
 		t.Fatalf("response = %d %q", response.Code, response.Body.String())
@@ -155,6 +184,7 @@ func TestMealInterpretSerializesReadySelectionsAndNullSemantics(t *testing.T) {
 			State:     mealai.ItemReady,
 			Food:      &mealai.ResolvedFood{FoodID: 1, DisplayName: "Tavuk", CanonicalName: "Chicken"},
 			Selection: &foodamount.Selection{Kind: foodamount.SelectionGrams, FoodID: 1, Grams: &foodamount.GramsSelection{Grams: 200}},
+			Preview:   &mealai.NutritionPreview{ResolvedGrams: 200},
 		},
 		{
 			Mention: "yumurta", Intent: foodintent.FoodIntent{Query: "yumurta"},
@@ -164,6 +194,7 @@ func TestMealInterpretSerializesReadySelectionsAndNullSemantics(t *testing.T) {
 				Kind: foodamount.SelectionPortion, FoodID: 2,
 				Portion: &foodamount.PortionSelection{PortionID: 9, Quantity: 2, Amount: 1, Measure: "adet", PortionGrams: 50},
 			},
+			Preview: &mealai.NutritionPreview{ResolvedGrams: 100},
 		},
 	}}
 	response := performRequestWithBody(mealRouter(&stubMealTextInterpreter{result: result}), http.MethodPost, "/ai/meals/interpret", `{"text":"meal"}`)
@@ -176,13 +207,12 @@ func TestMealInterpretSerializesReadySelectionsAndNullSemantics(t *testing.T) {
 		`"quantity":null`, `"unit_hint":null`,
 		`"kind":"grams","food_id":1,"grams":200,"portion":null`,
 		`"kind":"portion","food_id":2,"grams":null,"portion":{"portion_id":9,"quantity":2,"amount":1,"measure":"adet","portion_grams":50}`,
+		`"preview":{"resolved_grams":200,"nutrition":{"calories_kcal":null,"protein_g":null,"carbohydrates_g":null,"fat_g":null}}`,
+		`"preview":{"resolved_grams":100,"nutrition":{"calories_kcal":null,"protein_g":null,"carbohydrates_g":null,"fat_g":null}}`,
 	} {
 		if !strings.Contains(body, fragment) {
 			t.Fatalf("response %q missing %q", body, fragment)
 		}
-	}
-	if strings.Contains(body, "resolved_grams") {
-		t.Fatal("portion response exposed resolved_grams")
 	}
 }
 
@@ -209,7 +239,7 @@ func TestMealInterpretSerializesFoodClarificationInCandidateOrder(t *testing.T) 
 	if strings.Index(body, `"food_id":2`) > strings.Index(body, `"food_id":1`) {
 		t.Fatalf("candidate order changed: %s", body)
 	}
-	for _, fragment := range []string{`"food":null`, `"selection":null`, `"portions":[]`, `"allow_direct_grams":false`} {
+	for _, fragment := range []string{`"food":null`, `"selection":null`, `"preview":null`, `"portions":[]`, `"allow_direct_grams":false`} {
 		if !strings.Contains(body, fragment) {
 			t.Fatalf("response %q missing %q", body, fragment)
 		}
@@ -241,7 +271,7 @@ func TestMealInterpretSerializesAmountClarificationInPortionOrder(t *testing.T) 
 	if strings.Index(body, `"portion_id":8`) > strings.Index(body, `"portion_id":7`) {
 		t.Fatalf("portion order changed: %s", body)
 	}
-	for _, fragment := range []string{`"selection":null`, `"candidates":[]`, `"allow_direct_grams":true`} {
+	for _, fragment := range []string{`"selection":null`, `"preview":null`, `"candidates":[]`, `"allow_direct_grams":true`} {
 		if !strings.Contains(body, fragment) {
 			t.Fatalf("response %q missing %q", body, fragment)
 		}
@@ -277,7 +307,130 @@ func TestMealInterpretRejectsMalformedApplicationSuccess(t *testing.T) {
 	}
 }
 
-func mealRouter(interpreter MealTextInterpreter) http.Handler {
+func TestMealResolveIsPostOnly(t *testing.T) {
+	t.Parallel()
+
+	response := performRequest(mealRouter(&stubMealTextInterpreter{}), http.MethodGet, "/ai/meals/resolve")
+	if response.Code != http.StatusMethodNotAllowed || response.Header().Get("Allow") != http.MethodPost {
+		t.Fatalf("response = %d Allow=%q", response.Code, response.Header().Get("Allow"))
+	}
+}
+
+func TestMealResolveForwardsExplicitNullShapeAndSerializesPreview(t *testing.T) {
+	t.Parallel()
+
+	zero, err := food.NewNutrientAmount(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stub := &stubMealTextInterpreter{resolveResult: mealai.ResolveSelectionResult{
+		Intent: foodintent.FoodIntent{Query: "elma"}, State: mealai.ItemReady,
+		Food:      &mealai.ResolvedFood{FoodID: 7, DisplayName: "Elma", CanonicalName: "Apple"},
+		Selection: &foodamount.Selection{Kind: foodamount.SelectionGrams, FoodID: 7, Grams: &foodamount.GramsSelection{Grams: 125}},
+		Preview: &mealai.NutritionPreview{
+			ResolvedGrams: 125,
+			Nutrition:     nutritionPreviewWithCalories(zero),
+		},
+	}}
+	body := `{"food_id":7,"locale":"TR-tr","intent":{"query":"elma","quantity":null,"unit_hint":null},"choice":{"kind":"grams","grams":125,"portion_id":null,"quantity":null}}`
+	response := performRequestWithBody(mealRouter(stub), http.MethodPost, "/ai/meals/resolve", body)
+	if response.Code != http.StatusOK {
+		t.Fatalf("response = %d %s", response.Code, response.Body.String())
+	}
+	if stub.resolveCalls != 1 || stub.resolveRequest.FoodID != 7 || stub.resolveRequest.Locale != "TR-tr" || stub.resolveRequest.Intent.Query != "elma" || stub.resolveRequest.Intent.Quantity != nil || stub.resolveRequest.Intent.UnitHint != nil || stub.resolveRequest.Choice.Kind != mealai.ChoiceGrams || stub.resolveRequest.Choice.Grams == nil || *stub.resolveRequest.Choice.Grams != 125 || stub.resolveRequest.Choice.PortionID != nil || stub.resolveRequest.Choice.Quantity != nil {
+		t.Fatalf("resolve request = %#v", stub.resolveRequest)
+	}
+	if requestIDFromContext(stub.ctx) == "" || response.Header().Get(requestIDHeader) == "" {
+		t.Fatal("request ID middleware did not apply")
+	}
+	responseBody := response.Body.String()
+	for _, fragment := range []string{
+		`"state":"ready"`, `"preview":{"resolved_grams":125`, `"calories_kcal":0`, `"protein_g":null`, `"clarification":null`,
+	} {
+		if !strings.Contains(responseBody, fragment) {
+			t.Fatalf("response %q missing %q", responseBody, fragment)
+		}
+	}
+	if strings.Contains(responseBody, `"mention"`) {
+		t.Fatalf("continuation response contains mention: %s", responseBody)
+	}
+}
+
+func TestMealResolveRejectsMalformedBoundedJSONBeforeApplication(t *testing.T) {
+	t.Parallel()
+
+	stub := &stubMealTextInterpreter{}
+	tests := []string{
+		`{`,
+		`{"food_id":1,"locale":"tr","intent":{"query":"elma","quantity":null,"unit_hint":null},"choice":{"kind":"food_identity","grams":null,"portion_id":null,"quantity":null},"extra":true}`,
+		`{"food_id":1,"locale":"tr","intent":{"query":"elma","quantity":null,"unit_hint":null},"choice":{"kind":"food_identity","grams":null,"portion_id":null,"quantity":null}} {}`,
+		`{"food_id":1,"locale":"tr","intent":{"query":"` + strings.Repeat("x", mealResolveRequestBodyLimit) + `","quantity":null,"unit_hint":null},"choice":{"kind":"food_identity","grams":null,"portion_id":null,"quantity":null}}`,
+	}
+	for _, body := range tests {
+		response := performRequestWithBody(mealRouter(stub), http.MethodPost, "/ai/meals/resolve", body)
+		if response.Code != http.StatusBadRequest || response.Body.String() != "{\"status\":\"invalid_request\"}\n" {
+			t.Errorf("body length %d response = %d %q", len(body), response.Code, response.Body.String())
+		}
+	}
+	if stub.resolveCalls != 0 {
+		t.Fatalf("resolve calls = %d, want 0", stub.resolveCalls)
+	}
+}
+
+func TestMealResolveMapsNotFoundErrors(t *testing.T) {
+	t.Parallel()
+
+	body := `{"food_id":7,"locale":"tr","intent":{"query":"elma","quantity":null,"unit_hint":null},"choice":{"kind":"food_identity","grams":null,"portion_id":null,"quantity":null}}`
+	for _, test := range []struct {
+		err        error
+		statusCode int
+		status     string
+	}{
+		{err: &mealai.Error{Kind: mealai.ErrorFoodNotFound}, statusCode: http.StatusNotFound, status: "food_not_found"},
+		{err: &mealai.Error{Kind: mealai.ErrorPortionNotFound}, statusCode: http.StatusNotFound, status: "portion_not_found"},
+	} {
+		response := performRequestWithBody(mealRouter(&stubMealTextInterpreter{resolveErr: test.err}), http.MethodPost, "/ai/meals/resolve", body)
+		if response.Code != test.statusCode || response.Body.String() != "{\"status\":\""+test.status+"\"}\n" {
+			t.Errorf("error %v response = %d %q", test.err, response.Code, response.Body.String())
+		}
+	}
+}
+
+func TestMealResolveWorksWithoutConfiguredGroqExtractor(t *testing.T) {
+	t.Parallel()
+
+	detailer := &stubFoodDetailer{detail: fooddetail.Detail{
+		Food: food.Food{ID: 7, CanonicalName: "Apple"}, DisplayName: "Elma", Portions: []food.Portion{},
+	}}
+	calculator := &stubNutritionCalculator{result: nutritioncalc.Result{FoodID: 7, ResolvedGrams: 50}}
+	service := mealai.NewService(
+		foodextraction.NewService(nil), nil, &deterministicMealAmountResolver{}, detailer, calculator,
+	)
+	body := `{"food_id":7,"locale":"tr","intent":{"query":"elma","quantity":null,"unit_hint":null},"choice":{"kind":"grams","grams":50,"portion_id":null,"quantity":null}}`
+	response := performRequestWithBody(mealRouter(service), http.MethodPost, "/ai/meals/resolve", body)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"resolved_grams":50`) {
+		t.Fatalf("response = %d %q", response.Code, response.Body.String())
+	}
+}
+
+func TestMealResolveRejectsFoodIdentityClarificationSuccess(t *testing.T) {
+	t.Parallel()
+
+	stub := &stubMealTextInterpreter{resolveResult: mealai.ResolveSelectionResult{
+		Intent: foodintent.FoodIntent{Query: "elma"}, State: mealai.ItemClarificationRequired,
+		Clarification: &mealai.Clarification{
+			Kind: mealai.ClarificationFoodIdentity, Reason: "unexpected",
+			Candidates: []mealai.FoodOption{}, Portions: []food.Portion{},
+		},
+	}}
+	body := `{"food_id":7,"locale":"tr","intent":{"query":"elma","quantity":null,"unit_hint":null},"choice":{"kind":"food_identity","grams":null,"portion_id":null,"quantity":null}}`
+	response := performRequestWithBody(mealRouter(stub), http.MethodPost, "/ai/meals/resolve", body)
+	if response.Code != http.StatusInternalServerError || response.Body.String() != "{\"status\":\"internal_error\"}\n" {
+		t.Fatalf("response = %d %q", response.Code, response.Body.String())
+	}
+}
+
+func mealRouter(interpreter MealAIService) http.Handler {
 	return NewRouter(
 		discardLogger(), time.Second, func(context.Context) error { return nil },
 		&stubFoodSearcher{}, nil, nil, interpreter,
@@ -287,3 +440,7 @@ func mealRouter(interpreter MealTextInterpreter) http.Handler {
 func floatPointerHTTP(value float64) *float64 { return &value }
 
 func stringPointerHTTP(value string) *string { return &value }
+
+func nutritionPreviewWithCalories(calories food.NutrientAmount) nutritioncalc.Nutrition {
+	return nutritioncalc.Nutrition{Calories: calories}
+}

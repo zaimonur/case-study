@@ -12,6 +12,8 @@ const (
 	ErrorAITimeout         ErrorKind = "ai_timeout"
 	ErrorAIInvalidResponse ErrorKind = "ai_invalid_response"
 	ErrorAIFailure         ErrorKind = "ai_failure"
+	ErrorFoodNotFound      ErrorKind = "food_not_found"
+	ErrorPortionNotFound   ErrorKind = "portion_not_found"
 	ErrorResolutionFailure ErrorKind = "resolution_failure"
 	ErrorCanceled          ErrorKind = "canceled"
 	ErrorTimeout           ErrorKind = "timeout"

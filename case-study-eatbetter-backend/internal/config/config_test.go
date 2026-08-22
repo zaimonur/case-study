@@ -35,6 +35,15 @@ func TestLoadUsesDefaults(t *testing.T) {
 	if cfg.Database.PingTimeout != 2*time.Second {
 		t.Fatalf("Database.PingTimeout = %s, want 2s", cfg.Database.PingTimeout)
 	}
+	if cfg.Groq.APIKey != "" {
+		t.Fatalf("Groq.APIKey = %q, want empty", cfg.Groq.APIKey)
+	}
+	if cfg.Groq.Model != "openai/gpt-oss-120b" {
+		t.Fatalf("Groq.Model = %q, want openai/gpt-oss-120b", cfg.Groq.Model)
+	}
+	if cfg.Groq.Timeout != 10*time.Second {
+		t.Fatalf("Groq.Timeout = %s, want 10s", cfg.Groq.Timeout)
+	}
 }
 
 func TestLoadReadsOverrides(t *testing.T) {
@@ -52,6 +61,9 @@ func TestLoadReadsOverrides(t *testing.T) {
 		"DB_MIN_CONNS":             "2",
 		"DB_MAX_CONN_LIFETIME":     "1h",
 		"DB_PING_TIMEOUT":          "750ms",
+		"GROQ_API_KEY":             "synthetic-test-key",
+		"GROQ_MODEL":               "configured-model",
+		"GROQ_TIMEOUT":             "1500ms",
 	}))
 	if err != nil {
 		t.Fatalf("load config: %v", err)
@@ -65,6 +77,9 @@ func TestLoadReadsOverrides(t *testing.T) {
 	}
 	if cfg.Database.MaxConnLifetime != time.Hour || cfg.Database.PingTimeout != 750*time.Millisecond {
 		t.Fatalf("unexpected database duration overrides: %+v", cfg.Database)
+	}
+	if cfg.Groq.APIKey != "synthetic-test-key" || cfg.Groq.Model != "configured-model" || cfg.Groq.Timeout != 1500*time.Millisecond {
+		t.Fatalf("unexpected Groq overrides: model=%q timeout=%s", cfg.Groq.Model, cfg.Groq.Timeout)
 	}
 }
 
@@ -92,6 +107,10 @@ func TestLoadRejectsInvalidValues(t *testing.T) {
 		{name: "invalid max connections", overrides: map[string]string{"DB_MAX_CONNS": "0"}, wantError: "DB_MAX_CONNS"},
 		{name: "invalid min connections", overrides: map[string]string{"DB_MIN_CONNS": "-1"}, wantError: "DB_MIN_CONNS"},
 		{name: "min exceeds max", overrides: map[string]string{"DB_MAX_CONNS": "2", "DB_MIN_CONNS": "3"}, wantError: "DB_MIN_CONNS"},
+		{name: "blank Groq model", overrides: map[string]string{"GROQ_MODEL": "  "}, wantError: "GROQ_MODEL"},
+		{name: "invalid Groq timeout", overrides: map[string]string{"GROQ_TIMEOUT": "later"}, wantError: "GROQ_TIMEOUT"},
+		{name: "zero Groq timeout", overrides: map[string]string{"GROQ_TIMEOUT": "0s"}, wantError: "GROQ_TIMEOUT"},
+		{name: "negative Groq timeout", overrides: map[string]string{"GROQ_TIMEOUT": "-1s"}, wantError: "GROQ_TIMEOUT"},
 	}
 
 	for _, tt := range tests {
@@ -108,6 +127,23 @@ func TestLoadRejectsInvalidValues(t *testing.T) {
 				t.Fatalf("error = %v, want error containing %q", err, tt.wantError)
 			}
 		})
+	}
+}
+
+func TestLoadErrorsNeverContainGroqAPIKey(t *testing.T) {
+	t.Parallel()
+
+	const secret = "synthetic-sensitive-key-content"
+	_, err := load(mapLookup(map[string]string{
+		"DATABASE_URL": "postgres://localhost/eatbetter",
+		"GROQ_API_KEY": secret,
+		"GROQ_MODEL":   " ",
+	}))
+	if err == nil {
+		t.Fatal("load config succeeded, want error")
+	}
+	if strings.Contains(err.Error(), secret) {
+		t.Fatalf("configuration error exposed API key: %v", err)
 	}
 }
 

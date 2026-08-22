@@ -19,6 +19,8 @@ const (
 	defaultDatabaseMinConns    = int32(1)
 	defaultDatabaseMaxLifetime = 30 * time.Minute
 	defaultDatabasePingTimeout = 2 * time.Second
+	defaultGroqModel           = "openai/gpt-oss-120b"
+	defaultGroqTimeout         = 10 * time.Second
 )
 
 // Config contains all runtime configuration needed by the API process.
@@ -27,6 +29,7 @@ type Config struct {
 	LogLevel       slog.Level
 	HTTP           HTTP
 	Database       Database
+	Groq           Groq
 }
 
 // HTTP contains HTTP server lifecycle settings.
@@ -49,6 +52,14 @@ type Database struct {
 	MinConns        int32
 	MaxConnLifetime time.Duration
 	PingTimeout     time.Duration
+}
+
+// Groq contains optional text-extraction provider configuration. APIKey may be
+// empty so deployments that do not use AI extraction can still start.
+type Groq struct {
+	APIKey  string
+	Model   string
+	Timeout time.Duration
 }
 
 // Load reads and validates runtime configuration from the environment.
@@ -111,6 +122,16 @@ func load(lookup lookupEnv) (Config, error) {
 		return Config{}, err
 	}
 
+	groqAPIKey := stringValue(lookup, "GROQ_API_KEY", "")
+	groqModel := strings.TrimSpace(stringValue(lookup, "GROQ_MODEL", defaultGroqModel))
+	if groqModel == "" {
+		return Config{}, fmt.Errorf("GROQ_MODEL must not be empty")
+	}
+	groqTimeout, err := durationValue(lookup, "GROQ_TIMEOUT", defaultGroqTimeout)
+	if err != nil {
+		return Config{}, err
+	}
+
 	return Config{
 		AppEnvironment: appEnvironment,
 		LogLevel:       logLevel,
@@ -126,6 +147,11 @@ func load(lookup lookupEnv) (Config, error) {
 			MinConns:        minConns,
 			MaxConnLifetime: maxConnLifetime,
 			PingTimeout:     pingTimeout,
+		},
+		Groq: Groq{
+			APIKey:  groqAPIKey,
+			Model:   groqModel,
+			Timeout: groqTimeout,
 		},
 	}, nil
 }

@@ -46,12 +46,18 @@ func withRecovery(logger *slog.Logger, next http.Handler) http.Handler {
 			if recovered := recover(); recovered != nil {
 				logger.ErrorContext(r.Context(), "panic recovered from HTTP handler",
 					"request_id", requestIDFromContext(r.Context()),
-					"error", fmt.Sprint(recovered),
 				)
 				writeStatus(w, http.StatusInternalServerError, "internal_error")
 			}
 		}()
 
+		next.ServeHTTP(w, r)
+	})
+}
+
+func noStore(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
 		next.ServeHTTP(w, r)
 	})
 }

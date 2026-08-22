@@ -30,6 +30,7 @@ type stubMealTextInterpreter struct {
 	resolveResult  mealai.ResolveSelectionResult
 	resolveErr     error
 	resolveCalls   int
+	panicValue     any
 }
 
 type deterministicMealAmountResolver struct{}
@@ -49,6 +50,9 @@ func (*deterministicMealAmountResolver) ResolvePortionSelection(context.Context,
 }
 
 func (stub *stubMealTextInterpreter) ResolveSelection(ctx context.Context, request mealai.ResolveSelectionRequest) (mealai.ResolveSelectionResult, error) {
+	if stub.panicValue != nil {
+		panic(stub.panicValue)
+	}
 	stub.resolveCalls++
 	stub.ctx = ctx
 	stub.resolveRequest = request
@@ -56,6 +60,9 @@ func (stub *stubMealTextInterpreter) ResolveSelection(ctx context.Context, reque
 }
 
 func (stub *stubMealTextInterpreter) InterpretText(ctx context.Context, request mealai.Request) (mealai.Result, error) {
+	if stub.panicValue != nil {
+		panic(stub.panicValue)
+	}
 	stub.calls++
 	stub.ctx = ctx
 	stub.request = request
@@ -430,6 +437,126 @@ func TestMealResolveRejectsFoodIdentityClarificationSuccess(t *testing.T) {
 	}
 }
 
+func TestAIRoutesAlwaysDisableCaching(t *testing.T) {
+	t.Parallel()
+
+	readyResolve := readyResolveResultHTTP()
+	tests := []struct {
+		name   string
+		stub   *stubMealTextInterpreter
+		method string
+		path   string
+		body   string
+	}{
+		{name: "interpret success", stub: &stubMealTextInterpreter{result: mealai.Result{State: mealai.StateEmpty, Items: []mealai.Item{}}}, method: http.MethodPost, path: "/ai/meals/interpret", body: `{"text":"none","locale":"tr"}`},
+		{name: "interpret invalid", stub: &stubMealTextInterpreter{}, method: http.MethodPost, path: "/ai/meals/interpret", body: `{`},
+		{name: "interpret method", stub: &stubMealTextInterpreter{}, method: http.MethodGet, path: "/ai/meals/interpret"},
+		{name: "interpret failure", stub: &stubMealTextInterpreter{err: &mealai.Error{Kind: mealai.ErrorAIFailure}}, method: http.MethodPost, path: "/ai/meals/interpret", body: `{"text":"meal","locale":"tr"}`},
+		{name: "resolve success", stub: &stubMealTextInterpreter{resolveResult: readyResolve}, method: http.MethodPost, path: "/ai/meals/resolve", body: validResolveBodyHTTP()},
+		{name: "resolve invalid", stub: &stubMealTextInterpreter{}, method: http.MethodPost, path: "/ai/meals/resolve", body: `{`},
+		{name: "resolve method", stub: &stubMealTextInterpreter{}, method: http.MethodGet, path: "/ai/meals/resolve"},
+		{name: "resolve failure", stub: &stubMealTextInterpreter{resolveErr: &mealai.Error{Kind: mealai.ErrorFoodNotFound}}, method: http.MethodPost, path: "/ai/meals/resolve", body: validResolveBodyHTTP()},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			response := performRequestWithBody(mealRouter(test.stub), test.method, test.path, test.body)
+			if response.Header().Get("Cache-Control") != "no-store" {
+				t.Fatalf("Cache-Control = %q", response.Header().Get("Cache-Control"))
+			}
+		})
+	}
+}
+
+func TestMealInterpretSuccessLogIsAggregateOnly(t *testing.T) {
+	t.Parallel()
+
+	const (
+		mealSentinel      = "PRIVATE_MEAL_SENTINEL"
+		mentionSentinel   = "PRIVATE_MENTION_SENTINEL"
+		querySentinel     = "PRIVATE_QUERY_SENTINEL"
+		foodSentinel      = "PRIVATE_FOOD_SENTINEL"
+		canonicalSentinel = "PRIVATE_CANONICAL_SENTINEL"
+		brandSentinel     = "PRIVATE_BRAND_SENTINEL"
+	)
+	brand := brandSentinel
+	result := mealai.Result{State: mealai.StateReady, Items: []mealai.Item{{
+		Mention: mentionSentinel, Intent: foodintent.FoodIntent{Query: querySentinel}, State: mealai.ItemReady,
+		Food: &mealai.ResolvedFood{FoodID: 987654321, DisplayName: foodSentinel, CanonicalName: canonicalSentinel, Brand: &brand},
+		Selection: &foodamount.Selection{
+			Kind: foodamount.SelectionGrams, FoodID: 987654321, Grams: &foodamount.GramsSelection{Grams: 876543.25},
+		},
+		Preview: &mealai.NutritionPreview{ResolvedGrams: 876543.25},
+	}}}
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&logs, nil))
+	router := NewRouter(logger, time.Second, func(context.Context) error { return nil }, &stubFoodSearcher{}, nil, nil, &stubMealTextInterpreter{result: result})
+	response := performRequestWithBody(router, http.MethodPost, "/ai/meals/interpret", `{"text":"`+mealSentinel+`","locale":"tr"}`)
+	if response.Code != http.StatusOK {
+		t.Fatalf("response = %d %q", response.Code, response.Body.String())
+	}
+	logText := logs.String()
+	for _, expected := range []string{`"msg":"meal interpretation completed"`, `"state":"ready"`, `"item_count":1`, `"ready_count":1`, `"clarification_count":0`, `"request_id":`} {
+		if !strings.Contains(logText, expected) {
+			t.Fatalf("logs %q missing %q", logText, expected)
+		}
+	}
+	for _, sensitive := range []string{mealSentinel, mentionSentinel, querySentinel, foodSentinel, canonicalSentinel, brandSentinel, "987654321", "876543.25"} {
+		if strings.Contains(logText, sensitive) {
+			t.Fatalf("logs exposed %q", sensitive)
+		}
+	}
+}
+
+func TestMealResolveSuccessLogIsBounded(t *testing.T) {
+	t.Parallel()
+
+	const querySentinel = "PRIVATE_RESOLVE_QUERY_SENTINEL"
+	result := readyResolveResultHTTP()
+	result.Intent.Query = querySentinel
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&logs, nil))
+	router := NewRouter(logger, time.Second, func(context.Context) error { return nil }, &stubFoodSearcher{}, nil, nil, &stubMealTextInterpreter{resolveResult: result})
+	body := strings.Replace(validResolveBodyHTTP(), `"query":"elma"`, `"query":"`+querySentinel+`"`, 1)
+	response := performRequestWithBody(router, http.MethodPost, "/ai/meals/resolve", body)
+	if response.Code != http.StatusOK {
+		t.Fatalf("response = %d %q", response.Code, response.Body.String())
+	}
+	logText := logs.String()
+	for _, expected := range []string{`"msg":"meal selection resolved"`, `"state":"ready"`, `"choice_kind":"grams"`, `"has_preview":true`, `"request_id":`} {
+		if !strings.Contains(logText, expected) {
+			t.Fatalf("logs %q missing %q", logText, expected)
+		}
+	}
+	for _, sensitive := range []string{querySentinel, "987654321", "876543.25", "765432.1"} {
+		if strings.Contains(logText, sensitive) {
+			t.Fatalf("logs exposed %q", sensitive)
+		}
+	}
+}
+
+func TestPanicRecoveryDoesNotLogRecoveredPayload(t *testing.T) {
+	t.Parallel()
+
+	const panicSentinel = "PRIVATE_PANIC_PAYLOAD_SENTINEL"
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&logs, nil))
+	router := NewRouter(logger, time.Second, func(context.Context) error { return nil }, &stubFoodSearcher{}, nil, nil, &stubMealTextInterpreter{panicValue: panicSentinel})
+	response := performRequestWithBody(router, http.MethodPost, "/ai/meals/interpret", `{"text":"meal","locale":"tr"}`)
+	if response.Code != http.StatusInternalServerError || response.Body.String() != "{\"status\":\"internal_error\"}\n" {
+		t.Fatalf("response = %d %q", response.Code, response.Body.String())
+	}
+	requestID := response.Header().Get(requestIDHeader)
+	if requestID == "" || !strings.Contains(logs.String(), requestID) {
+		t.Fatal("panic response and log were not request-ID correlated")
+	}
+	if response.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("Cache-Control = %q", response.Header().Get("Cache-Control"))
+	}
+	if strings.Contains(logs.String(), panicSentinel) || strings.Contains(logs.String(), `"error"`) {
+		t.Fatalf("panic payload leaked: %s", logs.String())
+	}
+}
+
 func mealRouter(interpreter MealAIService) http.Handler {
 	return NewRouter(
 		discardLogger(), time.Second, func(context.Context) error { return nil },
@@ -443,4 +570,20 @@ func stringPointerHTTP(value string) *string { return &value }
 
 func nutritionPreviewWithCalories(calories food.NutrientAmount) nutritioncalc.Nutrition {
 	return nutritioncalc.Nutrition{Calories: calories}
+}
+
+func readyResolveResultHTTP() mealai.ResolveSelectionResult {
+	return mealai.ResolveSelectionResult{
+		Intent: foodintent.FoodIntent{Query: "elma"}, State: mealai.ItemReady,
+		Food: &mealai.ResolvedFood{FoodID: 987654321, DisplayName: "Elma", CanonicalName: "Apple"},
+		Selection: &foodamount.Selection{
+			Kind: foodamount.SelectionGrams, FoodID: 987654321,
+			Grams: &foodamount.GramsSelection{Grams: 876543.25},
+		},
+		Preview: &mealai.NutritionPreview{ResolvedGrams: 876543.25},
+	}
+}
+
+func validResolveBodyHTTP() string {
+	return `{"food_id":987654321,"locale":"tr","intent":{"query":"elma","quantity":null,"unit_hint":null},"choice":{"kind":"grams","grams":876543.25,"portion_id":null,"quantity":null}}`
 }

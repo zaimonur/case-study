@@ -65,6 +65,14 @@ func mealInterpretHandler(logger *slog.Logger, interpreter MealAIService) http.H
 			writeStatus(w, http.StatusInternalServerError, "internal_error")
 			return
 		}
+		readyCount, clarificationCount := mealItemCounts(result.Items)
+		logger.InfoContext(r.Context(), "meal interpretation completed",
+			"request_id", requestIDFromContext(r.Context()),
+			"state", result.State,
+			"item_count", len(result.Items),
+			"ready_count", readyCount,
+			"clarification_count", clarificationCount,
+		)
 		writeJSON(w, http.StatusOK, response)
 	})
 }
@@ -113,15 +121,33 @@ func mealResolveHandler(logger *slog.Logger, service MealAIService) http.Handler
 			writeStatus(w, http.StatusInternalServerError, "internal_error")
 			return
 		}
+		logger.InfoContext(r.Context(), "meal selection resolved",
+			"request_id", requestIDFromContext(r.Context()),
+			"state", result.State,
+			"choice_kind", safeMealChoiceKind(command.Choice.Kind),
+			"has_preview", result.Preview != nil,
+		)
 		writeJSON(w, http.StatusOK, response)
 	})
+}
+
+func mealItemCounts(items []mealai.Item) (ready, clarification int) {
+	for _, item := range items {
+		switch item.State {
+		case mealai.ItemReady:
+			ready++
+		case mealai.ItemClarificationRequired:
+			clarification++
+		}
+	}
+	return ready, clarification
 }
 
 func mealInterpretErrorResponse(err error) (int, string, string) {
 	var applicationError *mealai.Error
 	kind := "unknown"
 	if errors.As(err, &applicationError) {
-		kind = string(applicationError.Kind)
+		kind = safeMealErrorKind(applicationError.Kind)
 	}
 	switch {
 	case mealai.IsKind(err, mealai.ErrorInvalidInput):
@@ -146,6 +172,27 @@ func mealInterpretErrorResponse(err error) (int, string, string) {
 		return http.StatusRequestTimeout, "request_canceled", kind
 	default:
 		return http.StatusInternalServerError, "internal_error", kind
+	}
+}
+
+func safeMealChoiceKind(kind string) string {
+	switch kind {
+	case string(mealai.ChoiceFoodIdentity), string(mealai.ChoiceGrams), string(mealai.ChoicePortion):
+		return kind
+	default:
+		return ""
+	}
+}
+
+func safeMealErrorKind(kind mealai.ErrorKind) string {
+	switch kind {
+	case mealai.ErrorInvalidInput, mealai.ErrorAIUnavailable, mealai.ErrorAIRateLimited,
+		mealai.ErrorAITimeout, mealai.ErrorAIInvalidResponse, mealai.ErrorAIFailure,
+		mealai.ErrorFoodNotFound, mealai.ErrorPortionNotFound, mealai.ErrorResolutionFailure,
+		mealai.ErrorCanceled, mealai.ErrorTimeout:
+		return string(kind)
+	default:
+		return "unknown"
 	}
 }
 

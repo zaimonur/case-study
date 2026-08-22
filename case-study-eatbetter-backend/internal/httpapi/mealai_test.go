@@ -587,3 +587,171 @@ func readyResolveResultHTTP() mealai.ResolveSelectionResult {
 func validResolveBodyHTTP() string {
 	return `{"food_id":987654321,"locale":"tr","intent":{"query":"elma","quantity":null,"unit_hint":null},"choice":{"kind":"grams","grams":876543.25,"portion_id":null,"quantity":null}}`
 }
+
+func TestMealResolveSerializesAmountClarification(t *testing.T) {
+	t.Parallel()
+
+	result := mealai.ResolveSelectionResult{
+		Intent: foodintent.FoodIntent{
+			Query:    "yumurta",
+			Quantity: floatPointerHTTP(2),
+			UnitHint: stringPointerHTTP("adet"),
+		},
+		State: mealai.ItemClarificationRequired,
+		Food: &mealai.ResolvedFood{
+			FoodID:        7,
+			DisplayName:   "Yumurta",
+			CanonicalName: "Egg",
+		},
+		Clarification: &mealai.Clarification{
+			Kind:       mealai.ClarificationAmount,
+			Reason:     "unsupported_unit_requires_clarification",
+			Candidates: []mealai.FoodOption{},
+			Portions: []food.Portion{
+				{ID: 8, FoodID: 7, Amount: 1, Measure: "large", Grams: 50},
+				{ID: 7, FoodID: 7, Amount: 1, Measure: "medium", Grams: 44},
+			},
+			AllowDirectGrams: true,
+		},
+	}
+
+	stub := &stubMealTextInterpreter{resolveResult: result}
+
+	body := `{"food_id":7,"locale":"tr","intent":{"query":"yumurta","quantity":2,"unit_hint":"adet"},"choice":{"kind":"food_identity","grams":null,"portion_id":null,"quantity":null}}`
+
+	response := performRequestWithBody(
+		mealRouter(stub),
+		http.MethodPost,
+		"/ai/meals/resolve",
+		body,
+	)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("response = %d %q", response.Code, response.Body.String())
+	}
+
+	responseBody := response.Body.String()
+
+	for _, fragment := range []string{
+		`"state":"clarification_required"`,
+		`"food":{"food_id":7`,
+		`"selection":null`,
+		`"preview":null`,
+		`"kind":"amount"`,
+		`"reason":"unsupported_unit_requires_clarification"`,
+		`"candidates":[]`,
+		`"allow_direct_grams":true`,
+	} {
+		if !strings.Contains(responseBody, fragment) {
+			t.Fatalf("response %q missing %q", responseBody, fragment)
+		}
+	}
+
+	first := strings.Index(responseBody, `"portion_id":8`)
+	second := strings.Index(responseBody, `"portion_id":7`)
+	if first < 0 || second < 0 || first > second {
+		t.Fatalf("portion order changed: %s", responseBody)
+	}
+}
+
+func TestMealResolveFailureDoesNotLeakPayloadOrCause(t *testing.T) {
+	t.Parallel()
+
+	const (
+		querySentinel = "PRIVATE_RESOLVE_FAILURE_QUERY_SENTINEL"
+		unitSentinel  = "PRIVATE_RESOLVE_FAILURE_UNIT_SENTINEL"
+		causeSentinel = "PRIVATE_RESOLVE_FAILURE_CAUSE_SENTINEL"
+	)
+
+	tests := []struct {
+		name      string
+		body      string
+		sensitive []string
+	}{
+		{
+			name: "grams",
+			body: `{"food_id":987654321,"locale":"tr","intent":{"query":"` +
+				querySentinel + `","quantity":2,"unit_hint":"` + unitSentinel +
+				`"},"choice":{"kind":"grams","grams":876543.25,"portion_id":null,"quantity":null}}`,
+			sensitive: []string{
+				querySentinel,
+				unitSentinel,
+				causeSentinel,
+				"987654321",
+				"876543.25",
+			},
+		},
+		{
+			name: "portion",
+			body: `{"food_id":987654322,"locale":"tr","intent":{"query":"` +
+				querySentinel + `","quantity":2,"unit_hint":"` + unitSentinel +
+				`"},"choice":{"kind":"portion","grams":null,"portion_id":998877665,"quantity":76543.21}}`,
+			sensitive: []string{
+				querySentinel,
+				unitSentinel,
+				causeSentinel,
+				"987654322",
+				"998877665",
+				"76543.21",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			var logs bytes.Buffer
+			logger := slog.New(slog.NewJSONHandler(&logs, nil))
+
+			failure := errors.Join(
+				&mealai.Error{Kind: mealai.ErrorResolutionFailure},
+				errors.New(causeSentinel),
+			)
+
+			router := NewRouter(
+				logger,
+				time.Second,
+				func(context.Context) error { return nil },
+				&stubFoodSearcher{},
+				nil,
+				nil,
+				&stubMealTextInterpreter{resolveErr: failure},
+			)
+
+			response := performRequestWithBody(
+				router,
+				http.MethodPost,
+				"/ai/meals/resolve",
+				tt.body,
+			)
+
+			if response.Code != http.StatusInternalServerError ||
+				response.Body.String() != "{\"status\":\"internal_error\"}\n" {
+				t.Fatalf(
+					"response = %d %q",
+					response.Code,
+					response.Body.String(),
+				)
+			}
+
+			logText := logs.String()
+
+			for _, expected := range []string{
+				`"msg":"meal selection resolution failed"`,
+				`"error_kind":"resolution_failure"`,
+				`"request_id":`,
+			} {
+				if !strings.Contains(logText, expected) {
+					t.Fatalf("logs %q missing %q", logText, expected)
+				}
+			}
+
+			for _, sensitive := range tt.sensitive {
+				if strings.Contains(response.Body.String(), sensitive) ||
+					strings.Contains(logText, sensitive) {
+					t.Fatalf("response/log exposed %q", sensitive)
+				}
+			}
+		})
+	}
+}

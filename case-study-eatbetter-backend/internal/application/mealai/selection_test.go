@@ -237,3 +237,288 @@ func validDetail(foodID int64) fooddetail.Detail {
 		Food: food.Food{ID: foodID, CanonicalName: "Apple"}, DisplayName: "Elma", Portions: []food.Portion{},
 	}
 }
+
+func TestResolveSelectionRejectsMalformedPersistedFoodDetailBeforeAmount(t *testing.T) {
+	t.Parallel()
+
+	grams := 10.0
+	request := ResolveSelectionRequest{
+		FoodID: 7,
+		Locale: "tr",
+		Intent: foodintent.FoodIntent{Query: "elma"},
+		Choice: ExplicitChoice{Kind: ChoiceGrams, Grams: &grams},
+	}
+	blankBrand := "   "
+
+	tests := []struct {
+		name   string
+		mutate func(*fooddetail.Detail)
+	}{
+		{
+			name: "non-positive food id",
+			mutate: func(detail *fooddetail.Detail) {
+				detail.Food.ID = 0
+			},
+		},
+		{
+			name: "blank canonical name",
+			mutate: func(detail *fooddetail.Detail) {
+				detail.Food.CanonicalName = "   "
+			},
+		},
+		{
+			name: "blank display name",
+			mutate: func(detail *fooddetail.Detail) {
+				detail.DisplayName = "   "
+			},
+		},
+		{
+			name: "blank non-nil brand",
+			mutate: func(detail *fooddetail.Detail) {
+				detail.Food.Brand = &blankBrand
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			detail := validDetail(7)
+			tt.mutate(&detail)
+
+			detailer := &fakeFoodDetailer{detail: detail}
+			amount := &fakeAmountResolver{
+				results: []foodamount.Resolution{resolvedGrams(7, grams)},
+			}
+			calculator := &fakeNutritionCalculator{}
+
+			result, err := NewService(
+				&fakeTextExtractor{},
+				&fakeFoodResolver{},
+				amount,
+				detailer,
+				calculator,
+			).ResolveSelection(context.Background(), request)
+
+			if !IsKind(err, ErrorResolutionFailure) {
+				t.Fatalf("error = %v, want resolution_failure", err)
+			}
+			if result != (ResolveSelectionResult{}) {
+				t.Fatalf("result = %#v, want zero", result)
+			}
+			if detailer.calls != 1 {
+				t.Fatalf("detail calls = %d, want 1", detailer.calls)
+			}
+			if amount.calls != 0 || amount.portionCalls != 0 || calculator.calls != 0 {
+				t.Fatalf(
+					"malformed detail reached downstream dependencies: amount=%d portion=%d calculator=%d",
+					amount.calls,
+					amount.portionCalls,
+					calculator.calls,
+				)
+			}
+		})
+	}
+}
+
+func TestResolveSelectionRejectsExplicitChoiceAmountShapeMismatch(t *testing.T) {
+	t.Parallel()
+
+	grams := 100.0
+	portionID := int64(9)
+	quantity := 2.0
+
+	clarification := foodamount.Resolution{
+		State:  foodamount.StateClarificationRequired,
+		Reason: foodamount.ReasonUnitRequired,
+		Clarification: &foodamount.Clarification{
+			Portions:         []food.Portion{},
+			AllowDirectGrams: true,
+		},
+	}
+
+	portionResolution := foodamount.Resolution{
+		State:  foodamount.StateResolved,
+		Reason: foodamount.ReasonExplicitPortionSelection,
+		Selection: &foodamount.Selection{
+			Kind:   foodamount.SelectionPortion,
+			FoodID: 7,
+			Portion: &foodamount.PortionSelection{
+				PortionID:    portionID,
+				Quantity:     quantity,
+				Amount:       1,
+				Measure:      "large",
+				PortionGrams: 50,
+			},
+		},
+	}
+
+	tests := []struct {
+		name       string
+		choice     ExplicitChoice
+		resolution foodamount.Resolution
+		viaPortion bool
+	}{
+		{
+			name:       "grams choice returned clarification",
+			choice:     ExplicitChoice{Kind: ChoiceGrams, Grams: &grams},
+			resolution: clarification,
+		},
+		{
+			name:       "grams choice returned portion",
+			choice:     ExplicitChoice{Kind: ChoiceGrams, Grams: &grams},
+			resolution: portionResolution,
+		},
+		{
+			name: "portion choice returned clarification",
+			choice: ExplicitChoice{
+				Kind: ChoicePortion, PortionID: &portionID, Quantity: &quantity,
+			},
+			resolution: clarification,
+			viaPortion: true,
+		},
+		{
+			name: "portion choice returned grams",
+			choice: ExplicitChoice{
+				Kind: ChoicePortion, PortionID: &portionID, Quantity: &quantity,
+			},
+			resolution: resolvedGrams(7, grams),
+			viaPortion: true,
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			amount := &fakeAmountResolver{}
+			if tt.viaPortion {
+				amount.portionResults = []foodamount.Resolution{tt.resolution}
+			} else {
+				amount.results = []foodamount.Resolution{tt.resolution}
+			}
+
+			calculator := &fakeNutritionCalculator{}
+
+			result, err := NewService(
+				&fakeTextExtractor{},
+				&fakeFoodResolver{},
+				amount,
+				&fakeFoodDetailer{detail: validDetail(7)},
+				calculator,
+			).ResolveSelection(context.Background(), ResolveSelectionRequest{
+				FoodID: 7,
+				Locale: "tr",
+				Intent: foodintent.FoodIntent{Query: "elma"},
+				Choice: tt.choice,
+			})
+
+			if !IsKind(err, ErrorResolutionFailure) {
+				t.Fatalf("error = %v, want resolution_failure", err)
+			}
+			if result != (ResolveSelectionResult{}) {
+				t.Fatalf("result = %#v, want zero", result)
+			}
+			if calculator.calls != 0 {
+				t.Fatalf("calculator calls = %d, want 0", calculator.calls)
+			}
+
+			if tt.viaPortion {
+				if amount.portionCalls != 1 || amount.calls != 0 {
+					t.Fatalf(
+						"amount calls = %d portion calls = %d",
+						amount.calls,
+						amount.portionCalls,
+					)
+				}
+			} else if amount.calls != 1 || amount.portionCalls != 0 {
+				t.Fatalf(
+					"amount calls = %d portion calls = %d",
+					amount.calls,
+					amount.portionCalls,
+				)
+			}
+		})
+	}
+}
+
+func TestResolveSelectionPortionChoiceQuantityOverridesIntentQuantity(t *testing.T) {
+	t.Parallel()
+
+	intentQuantity := 2.0
+	choiceQuantity := 3.0
+	portionID := int64(53985)
+
+	intent := foodintent.FoodIntent{
+		Query:    "yumurta",
+		Quantity: &intentQuantity,
+		UnitHint: stringPointer("adet"),
+	}
+
+	amount := &fakeAmountResolver{
+		portionResults: []foodamount.Resolution{{
+			State:  foodamount.StateResolved,
+			Reason: foodamount.ReasonExplicitPortionSelection,
+			Selection: &foodamount.Selection{
+				Kind:   foodamount.SelectionPortion,
+				FoodID: 7,
+				Portion: &foodamount.PortionSelection{
+					PortionID:    portionID,
+					Quantity:     choiceQuantity,
+					Amount:       1,
+					Measure:      "large",
+					PortionGrams: 50,
+				},
+			},
+		}},
+	}
+
+	calculator := &fakeNutritionCalculator{
+		results: []nutritioncalc.Result{{
+			FoodID:        7,
+			ResolvedGrams: 150,
+		}},
+	}
+
+	result, err := NewService(
+		&fakeTextExtractor{},
+		&fakeFoodResolver{},
+		amount,
+		&fakeFoodDetailer{detail: validDetail(7)},
+		calculator,
+	).ResolveSelection(context.Background(), ResolveSelectionRequest{
+		FoodID: 7,
+		Locale: "tr",
+		Intent: intent,
+		Choice: ExplicitChoice{
+			Kind:      ChoicePortion,
+			PortionID: &portionID,
+			Quantity:  &choiceQuantity,
+		},
+	})
+	if err != nil {
+		t.Fatalf("ResolveSelection: %v", err)
+	}
+
+	if result.Intent.Quantity == nil || *result.Intent.Quantity != 2 {
+		t.Fatalf("original intent quantity changed: %#v", result.Intent.Quantity)
+	}
+	if amount.portionCalls != 1 ||
+		amount.portionRequests[0].Quantity != 3 {
+		t.Fatalf("portion request = %#v", amount.portionRequests)
+	}
+
+	request := calculator.requests[0]
+	if request.Quantity == nil || *request.Quantity != 3 ||
+		request.PortionID == nil || *request.PortionID != portionID {
+		t.Fatalf("nutrition request = %#v", request)
+	}
+
+	if result.Selection == nil ||
+		result.Selection.Portion == nil ||
+		result.Selection.Portion.Quantity != 3 {
+		t.Fatalf("selection = %#v", result.Selection)
+	}
+	if result.Preview == nil || result.Preview.ResolvedGrams != 150 {
+		t.Fatalf("preview = %#v", result.Preview)
+	}
+}

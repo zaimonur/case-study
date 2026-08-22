@@ -71,6 +71,14 @@ func TestResolveDecisionPolicy(t *testing.T) {
 			wantState:  StateAmbiguous, wantReason: ReasonMultipleExactIdentities,
 		},
 		{
+			name: "broad Turkish Chicken aliases remain ambiguous",
+			candidates: []foodsearch.FoodCandidate{
+				exactCandidate(7, foodsearch.SourceFoodAlias, foodsearch.FormPrimary, false, "Chicken raw"),
+				exactCandidate(8, foodsearch.SourceFoodAlias, foodsearch.FormPrimary, false, "Chicken roasted"),
+			},
+			wantState: StateAmbiguous, wantReason: ReasonMultipleExactIdentities,
+		},
+		{
 			name: "duplicate exact FoodID uses first eligible occurrence",
 			candidates: []foodsearch.FoodCandidate{
 				exactCandidate(20, foodsearch.SourceCanonicalName, foodsearch.FormPrimary, false, "first"),

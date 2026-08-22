@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	appimport "github.com/zaimonur/case-study/case-study-eatbetter-backend/internal/application/foodimport"
+	"github.com/zaimonur/case-study/case-study-eatbetter-backend/internal/platform/database/foodalias"
 )
 
 const advisoryLockName = "eatbetter_usda_food_import"
@@ -142,6 +143,10 @@ func (s *postgresStage) Commit(ctx context.Context) (appimport.MergeResult, erro
 	if _, err := s.tx.Exec(ctx, relatedRowsMergeSQL); err != nil {
 		_ = s.tx.Rollback(context.WithoutCancel(ctx))
 		return appimport.MergeResult{}, fmt.Errorf("merge staged USDA related rows: %w", err)
+	}
+	if _, err := foodalias.MaterializeInTransaction(ctx, s.tx); err != nil {
+		_ = s.tx.Rollback(context.WithoutCancel(ctx))
+		return appimport.MergeResult{}, fmt.Errorf("materialize retrieval aliases: %w", err)
 	}
 
 	var result appimport.MergeResult

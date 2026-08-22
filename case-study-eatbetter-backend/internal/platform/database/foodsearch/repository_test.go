@@ -126,6 +126,25 @@ func TestRepositoryIntegration(t *testing.T) {
 	assertFirst("Great Value milk", "en", ids["great_value_milk"], "MILK")
 	assertFirst("apple pie", "en", ids["apple_pie"], "Apple pie")
 
+	for _, locale := range []string{"tr-TR", "tr"} {
+		chickenMatches := assertFirst("tavuk", locale, ids["chicken_raw"], "Chicken, broilers or fryers, meat only, raw")
+		if len(chickenMatches) != 2 || chickenMatches[1].FoodID != ids["chicken_roasted"] {
+			t.Fatalf("Turkish Chicken alias matches for %s = %+v", locale, chickenMatches)
+		}
+		for _, candidate := range chickenMatches {
+			if candidate.Match.Class != app.MatchExact || candidate.Match.Source != app.SourceFoodAlias {
+				t.Fatalf("Turkish Chicken alias metadata for %s = %+v", locale, candidate.Match)
+			}
+		}
+	}
+	unrelatedLocaleMatches, err := service.Search(ctx, app.Request{Query: "tavuk", Locale: "de-DE"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(unrelatedLocaleMatches) != 0 {
+		t.Fatalf("Turkish alias leaked into unrelated locale: %+v", unrelatedLocaleMatches)
+	}
+
 	duplicate := assertFirst("rice", "tr", ids["rice"], "Pirinç")
 	count := 0
 	for _, candidate := range duplicate {
@@ -235,6 +254,13 @@ func seedSearchFoods(t *testing.T, ctx context.Context, pool *pgxpool.Pool) map[
 	appleProduct := insertFood("apple_product", "ORANGE JUICE", &apple)
 	identify(appleProduct, "000000000203")
 	insertFood("apple_pie", "Apple pie", nil)
+	chickenRaw := insertFood("chicken_raw", "Chicken, broilers or fryers, meat only, raw", nil)
+	chickenRoasted := insertFood("chicken_roasted", "Chicken, broilers or fryers, meat only, cooked, roasted", nil)
+	for _, foodID := range []int64{chickenRaw, chickenRoasted} {
+		if _, err := pool.Exec(ctx, `INSERT INTO food_aliases (food_id, alias, language_tag) VALUES ($1, 'tavuk', 'tr')`, foodID); err != nil {
+			t.Fatal(err)
+		}
+	}
 	return ids
 }
 

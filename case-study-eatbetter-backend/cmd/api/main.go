@@ -8,10 +8,16 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
+	"github.com/zaimonur/case-study/case-study-eatbetter-backend/internal/adapters/groq"
+	"github.com/zaimonur/case-study/case-study-eatbetter-backend/internal/application/foodamount"
 	"github.com/zaimonur/case-study/case-study-eatbetter-backend/internal/application/fooddetail"
+	"github.com/zaimonur/case-study/case-study-eatbetter-backend/internal/application/foodextraction"
+	"github.com/zaimonur/case-study/case-study-eatbetter-backend/internal/application/foodresolver"
 	"github.com/zaimonur/case-study/case-study-eatbetter-backend/internal/application/foodsearch"
+	"github.com/zaimonur/case-study/case-study-eatbetter-backend/internal/application/mealai"
 	"github.com/zaimonur/case-study/case-study-eatbetter-backend/internal/application/nutritioncalc"
 	"github.com/zaimonur/case-study/case-study-eatbetter-backend/internal/config"
 	"github.com/zaimonur/case-study/case-study-eatbetter-backend/internal/httpapi"
@@ -53,7 +59,21 @@ func run() error {
 	foodSearchService := foodsearch.NewService(dbfoodsearch.New(pool))
 	foodDetailService := fooddetail.NewService(dbfooddetail.New(pool))
 	nutritionService := nutritioncalc.NewService(dbnutritioncalc.New(pool))
-	handler := httpapi.NewRouter(logger, cfg.Database.PingTimeout, pool.Ping, foodSearchService, foodDetailService, nutritionService)
+	foodResolverService := foodresolver.NewService(foodSearchService)
+	foodAmountService := foodamount.NewService(foodDetailService)
+	var textExtractor foodextraction.Extractor
+	if strings.TrimSpace(cfg.Groq.APIKey) != "" {
+		textExtractor, err = groq.NewExtractor(cfg.Groq)
+		if err != nil {
+			return fmt.Errorf("construct Groq text extractor: %w", err)
+		}
+	}
+	extractionService := foodextraction.NewService(textExtractor)
+	mealAIService := mealai.NewService(extractionService, foodResolverService, foodAmountService)
+	handler := httpapi.NewRouter(
+		logger, cfg.Database.PingTimeout, pool.Ping,
+		foodSearchService, foodDetailService, nutritionService, mealAIService,
+	)
 	server := httpapi.NewServer(cfg.HTTP, handler)
 	serverErrors := make(chan error, 1)
 

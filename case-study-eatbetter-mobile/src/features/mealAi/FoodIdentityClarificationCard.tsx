@@ -29,6 +29,10 @@ export function FoodIdentityClarificationCard({
     'mention' in item
       ? `“${item.mention}” için hangisini kastettin?`
       : `Fotoğraftaki “${item.observation}” için hangisi doğru?`;
+  const guidance =
+    'mention' in item
+      ? 'Bu yiyecek için güvenilir bir seçenek bulamadım. Açıklamayı düzenleyebilirsin.'
+      : 'Bu yiyecek için güvenilir bir seçenek bulamadım. Yeni giriş yapıp başka bir fotoğraf deneyebilirsin.';
 
   return (
     <View style={styles.card}>
@@ -36,9 +40,7 @@ export function FoodIdentityClarificationCard({
       <Text style={styles.question}>{question}</Text>
 
       {candidates.length === 0 ? (
-        <Text style={styles.guidance}>
-          Bu yiyecek için güvenilir bir seçenek bulamadım. Açıklamayı düzenleyebilirsin.
-        </Text>
+        <Text style={styles.guidance}>{guidance}</Text>
       ) : (
         <View style={styles.candidates}>
           {candidates.map((candidate, candidateIndex) => (

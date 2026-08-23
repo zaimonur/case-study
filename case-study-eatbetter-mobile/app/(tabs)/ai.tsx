@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Keyboard,
@@ -12,20 +12,33 @@ import {
   View,
 } from 'react-native';
 
+import type { MealItem } from '../../src/domain/meal';
 import type {
   ClarificationRequiredMealAiItem,
   FoodIdentityClarificationMealAiItem,
   ReadyMealAiItem,
 } from '../../src/domain/mealAi';
+import { createLocalMealRecord } from '../../src/domain/mealRecord';
 import {
   AmountClarificationCard,
   type AmountResolveChoice,
 } from '../../src/features/mealAi/AmountClarificationCard';
 import { FoodIdentityClarificationCard } from '../../src/features/mealAi/FoodIdentityClarificationCard';
+import {
+  mapReadyMealAiItemToMealItem,
+} from '../../src/features/mealAi/mapReadyMealAiItemToMealItem';
+import { MealAiReviewCard } from '../../src/features/mealAi/MealAiReviewCard';
 import { isMealAiSessionFullyReady } from '../../src/features/mealAi/mealAiSession';
+import type {
+  MealAiSessionItem,
+  MealAiSessionState,
+} from '../../src/features/mealAi/mealAiSession';
 import { useMealAiSession } from '../../src/features/mealAi/useMealAiSession';
+import { useMeals } from '../../src/state/MealStoreProvider';
 
 const MEAL_AI_LOCALE = 'tr-TR';
+
+type SaveStatus = 'idle' | 'saving' | 'error' | 'success';
 
 function isFoodIdentityClarificationItem(
   item: ClarificationRequiredMealAiItem,
@@ -43,18 +56,44 @@ function ReadyMealAiItemCard({ item }: { item: ReadyMealAiItem }) {
   );
 }
 
+function mapFullyReadySessionToMealItems(state: MealAiSessionState): MealItem[] | null {
+  if (state.status !== 'active' || !isMealAiSessionFullyReady(state)) {
+    return null;
+  }
+
+  const mealItems: MealItem[] = [];
+  for (const sessionItem of state.items) {
+    if (sessionItem.item.state !== 'ready') {
+      return null;
+    }
+
+    mealItems.push(mapReadyMealAiItemToMealItem(sessionItem.item));
+  }
+
+  return mealItems;
+}
+
 export default function AiScreen() {
   const { state, interpret, reset, resolveItem } = useMealAiSession();
+  const { addMeal, hydrationStatus } = useMeals();
   const [draft, setDraft] = useState('');
+  const [saveStatus, setSaveStatus] = useState<SaveStatus>('idle');
   const lastSubmittedTextRef = useRef<string | null>(null);
   const completedSessionInvalidatedRef = useRef(false);
   const interpretCommandInFlightRef = useRef(false);
+  const saveInFlightRef = useRef(false);
+  const invalidatedReviewItemsRef = useRef(new WeakSet<MealAiSessionItem[]>());
 
   const isInterpreting = state.status === 'interpreting';
-  const canSubmit = state.status === 'idle' && draft.trim().length > 0;
+  const saveIsRunning = saveStatus === 'saving';
+  const canSubmit = state.status === 'idle' && draft.trim().length > 0 && !saveIsRunning;
   const retryText = lastSubmittedTextRef.current;
   const canRetry =
-    state.status === 'error' && retryText !== null && retryText.trim().length > 0;
+    state.status === 'error' &&
+    retryText !== null &&
+    retryText.trim().length > 0 &&
+    !saveIsRunning;
+  const readyMealItems = useMemo(() => mapFullyReadySessionToMealItems(state), [state]);
 
   const runInterpret = useCallback(
     async (submittedText: string) => {
@@ -73,13 +112,14 @@ export default function AiScreen() {
   );
 
   const submitDraft = useCallback(async () => {
-    if (!canSubmit || interpretCommandInFlightRef.current) {
+    if (!canSubmit || interpretCommandInFlightRef.current || saveInFlightRef.current) {
       return;
     }
 
     const submittedText = draft;
     lastSubmittedTextRef.current = submittedText;
     completedSessionInvalidatedRef.current = false;
+    setSaveStatus('idle');
     Keyboard.dismiss();
     await runInterpret(submittedText);
   }, [canSubmit, draft, runInterpret]);
@@ -90,23 +130,37 @@ export default function AiScreen() {
       state.status !== 'error' ||
       submittedText === null ||
       submittedText.trim().length === 0 ||
-      interpretCommandInFlightRef.current
+      interpretCommandInFlightRef.current ||
+      saveInFlightRef.current
     ) {
       return;
     }
 
     completedSessionInvalidatedRef.current = false;
+    setSaveStatus('idle');
     Keyboard.dismiss();
     await runInterpret(submittedText);
   }, [runInterpret, state.status]);
 
   const updateDraft = useCallback(
     (nextDraft: string) => {
+      if (saveInFlightRef.current) {
+        return;
+      }
+
+      if (nextDraft !== draft) {
+        setSaveStatus('idle');
+      }
+
       if (
         nextDraft !== draft &&
         (state.status === 'active' || state.status === 'empty' || state.status === 'error') &&
         !completedSessionInvalidatedRef.current
       ) {
+        if (state.status === 'active') {
+          invalidatedReviewItemsRef.current.add(state.items);
+        }
+
         completedSessionInvalidatedRef.current = true;
         lastSubmittedTextRef.current = null;
         reset();
@@ -114,17 +168,26 @@ export default function AiScreen() {
 
       setDraft(nextDraft);
     },
-    [draft, reset, state.status],
+    [draft, reset, state],
   );
 
   const startNewEntry = useCallback(() => {
+    if (saveInFlightRef.current) {
+      return;
+    }
+
+    if (state.status === 'active') {
+      invalidatedReviewItemsRef.current.add(state.items);
+    }
+
     reset();
     setDraft('');
+    setSaveStatus('idle');
     lastSubmittedTextRef.current = null;
     completedSessionInvalidatedRef.current = false;
     interpretCommandInFlightRef.current = false;
     Keyboard.dismiss();
-  }, [reset]);
+  }, [reset, state]);
 
   const selectFoodCandidate = useCallback(
     async (itemIndex: number, foodId: number) => {
@@ -162,7 +225,44 @@ export default function AiScreen() {
     [resolveItem],
   );
 
-  const fullyReady = state.status === 'active' && isMealAiSessionFullyReady(state);
+  const saveReadyMeal = useCallback(async () => {
+    if (
+      state.status !== 'active' ||
+      !isMealAiSessionFullyReady(state) ||
+      invalidatedReviewItemsRef.current.has(state.items) ||
+      hydrationStatus !== 'ready' ||
+      saveInFlightRef.current
+    ) {
+      return;
+    }
+
+    saveInFlightRef.current = true;
+    setSaveStatus('saving');
+
+    try {
+      const currentMealItems = mapFullyReadySessionToMealItems(state);
+      if (currentMealItems === null) {
+        setSaveStatus('error');
+        return;
+      }
+
+      const mealRecord = createLocalMealRecord(currentMealItems);
+      await addMeal(mealRecord);
+
+      invalidatedReviewItemsRef.current.add(state.items);
+      reset();
+      setDraft('');
+      lastSubmittedTextRef.current = null;
+      completedSessionInvalidatedRef.current = false;
+      interpretCommandInFlightRef.current = false;
+      setSaveStatus('success');
+      Keyboard.dismiss();
+    } catch {
+      setSaveStatus('error');
+    } finally {
+      saveInFlightRef.current = false;
+    }
+  }, [addMeal, hydrationStatus, reset, state]);
 
   return (
     <KeyboardAvoidingView
@@ -186,12 +286,15 @@ export default function AiScreen() {
             accessibilityLabel="Öğün açıklaması"
             autoCapitalize="sentences"
             autoCorrect
-            editable={!isInterpreting}
+            editable={!isInterpreting && !saveIsRunning}
             multiline
             onChangeText={updateDraft}
             placeholder="Örn. 2 yumurta ve 200 g tavuk yedim."
             placeholderTextColor="#87928e"
-            style={[styles.input, isInterpreting && styles.inputDisabled]}
+            style={[
+              styles.input,
+              (isInterpreting || saveIsRunning) && styles.inputDisabled,
+            ]}
             textAlignVertical="top"
             value={draft}
           />
@@ -217,6 +320,12 @@ export default function AiScreen() {
             </Text>
           </Pressable>
         </View>
+
+        {saveStatus === 'success' ? (
+          <View accessibilityLiveRegion="polite" style={[styles.stateCard, styles.successCard]}>
+            <Text style={styles.successTitle}>Öğün günlüğe eklendi.</Text>
+          </View>
+        ) : null}
 
         {state.status === 'interpreting' ? (
           <View accessibilityLiveRegion="polite" style={styles.stateCard}>
@@ -286,51 +395,71 @@ export default function AiScreen() {
 
         {state.status === 'active' ? (
           <View accessibilityLiveRegion="polite" style={styles.stateCard}>
-            <Text style={styles.stateTitle}>
-              {fullyReady ? 'Öğünün anlaşıldı' : 'Öğünü netleştirelim'}
-            </Text>
-            <Text style={styles.stateText}>
-              {fullyReady
-                ? 'Yazdığın yiyecekleri başarıyla yorumladım.'
-                : 'Öğünü tamamlamak için birkaç ayrıntıyı netleştirmemiz gerekiyor.'}
-            </Text>
-            <View style={styles.sessionItems}>
-              {state.items.map((sessionItem, itemIndex) => {
-                const item = sessionItem.item;
+            {readyMealItems !== null ? (
+              <MealAiReviewCard
+                hydrationStatus={hydrationStatus}
+                items={readyMealItems}
+                onSave={saveReadyMeal}
+                saveStatus={saveStatus === 'success' ? 'idle' : saveStatus}
+              />
+            ) : (
+              <>
+                <Text style={styles.stateTitle}>Öğünü netleştirelim</Text>
+                <Text style={styles.stateText}>
+                  Öğünü tamamlamak için birkaç ayrıntıyı netleştirmemiz gerekiyor.
+                </Text>
+                <View style={styles.sessionItems}>
+                  {state.items.map((sessionItem, itemIndex) => {
+                    const item = sessionItem.item;
 
-                if (item.state === 'ready') {
-                  return <ReadyMealAiItemCard item={item} key={`meal-item-${itemIndex}`} />;
-                }
+                    if (item.state === 'ready') {
+                      return <ReadyMealAiItemCard item={item} key={`meal-item-${itemIndex}`} />;
+                    }
 
-                if (isFoodIdentityClarificationItem(item)) {
-                  return (
-                    <FoodIdentityClarificationCard
-                      item={item}
-                      itemIndex={itemIndex}
-                      key={`meal-item-${itemIndex}`}
-                      onSelectCandidate={selectFoodCandidate}
-                      resolve={sessionItem.resolve}
-                    />
-                  );
-                }
+                    if (isFoodIdentityClarificationItem(item)) {
+                      return (
+                        <FoodIdentityClarificationCard
+                          item={item}
+                          itemIndex={itemIndex}
+                          key={`meal-item-${itemIndex}`}
+                          onSelectCandidate={selectFoodCandidate}
+                          resolve={sessionItem.resolve}
+                        />
+                      );
+                    }
 
-                return (
-                  <AmountClarificationCard
-                    item={item}
-                    itemIndex={itemIndex}
-                    key={`meal-item-${itemIndex}`}
-                    onConfirm={confirmAmount}
-                    resolve={sessionItem.resolve}
-                  />
-                );
-              })}
-            </View>
+                    return (
+                      <AmountClarificationCard
+                        item={item}
+                        itemIndex={itemIndex}
+                        key={`meal-item-${itemIndex}`}
+                        onConfirm={confirmAmount}
+                        resolve={sessionItem.resolve}
+                      />
+                    );
+                  })}
+                </View>
+              </>
+            )}
             <Pressable
               accessibilityRole="button"
+              accessibilityState={{ disabled: saveIsRunning }}
+              disabled={saveIsRunning}
               onPress={startNewEntry}
-              style={({ pressed }) => [styles.secondaryButton, pressed && styles.buttonPressed]}
+              style={({ pressed }) => [
+                styles.secondaryButton,
+                saveIsRunning && styles.secondaryButtonDisabled,
+                pressed && !saveIsRunning && styles.buttonPressed,
+              ]}
             >
-              <Text style={styles.secondaryButtonText}>Yeni giriş</Text>
+              <Text
+                style={[
+                  styles.secondaryButtonText,
+                  saveIsRunning && styles.secondaryButtonTextDisabled,
+                ]}
+              >
+                Yeni giriş
+              </Text>
             </Pressable>
           </View>
         ) : null}
@@ -412,6 +541,8 @@ const styles = StyleSheet.create({
   itemDetail: { color: '#64716c', fontSize: 14, lineHeight: 20 },
   errorCard: { borderColor: '#ead8d5' },
   errorTitle: { color: '#7a3028', fontSize: 17, fontWeight: '700' },
+  successCard: { borderColor: '#b9d8ca', backgroundColor: '#eff7f3' },
+  successTitle: { color: '#194c3c', fontSize: 16, fontWeight: '700' },
   actionRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginTop: 2 },
   retryButton: {
     minHeight: 44,

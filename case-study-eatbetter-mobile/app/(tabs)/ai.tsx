@@ -13,11 +13,14 @@ import {
 } from 'react-native';
 
 import type {
-  AmountClarificationMealAiItem,
   ClarificationRequiredMealAiItem,
   FoodIdentityClarificationMealAiItem,
   ReadyMealAiItem,
 } from '../../src/domain/mealAi';
+import {
+  AmountClarificationCard,
+  type AmountResolveChoice,
+} from '../../src/features/mealAi/AmountClarificationCard';
 import { FoodIdentityClarificationCard } from '../../src/features/mealAi/FoodIdentityClarificationCard';
 import { isMealAiSessionFullyReady } from '../../src/features/mealAi/mealAiSession';
 import { useMealAiSession } from '../../src/features/mealAi/useMealAiSession';
@@ -36,15 +39,6 @@ function ReadyMealAiItemCard({ item }: { item: ReadyMealAiItem }) {
       <Text style={styles.readyLabel}>Hazır</Text>
       <Text style={styles.itemName}>{item.food.displayName}</Text>
       {item.food.brand !== null ? <Text style={styles.itemDetail}>{item.food.brand}</Text> : null}
-    </View>
-  );
-}
-
-function AmountClarificationPlaceholder({ item }: { item: AmountClarificationMealAiItem }) {
-  return (
-    <View style={styles.itemCard}>
-      <Text style={styles.itemName}>{item.food.displayName}</Text>
-      <Text style={styles.itemDetail}>Miktar bilgisini netleştirmemiz gerekiyor.</Text>
     </View>
   );
 }
@@ -139,6 +133,28 @@ export default function AiScreen() {
           kind: 'food_identity',
           foodId,
         });
+      } catch {
+        // Task 2 rejects stale, duplicate, or otherwise invalid local commands.
+      }
+    },
+    [resolveItem],
+  );
+
+  const confirmAmount = useCallback(
+    async (itemIndex: number, choice: AmountResolveChoice) => {
+      try {
+        if (choice.kind === 'grams') {
+          await resolveItem(itemIndex, {
+            kind: 'grams',
+            grams: choice.grams,
+          });
+        } else {
+          await resolveItem(itemIndex, {
+            kind: 'portion',
+            portionId: choice.portionId,
+            quantity: choice.quantity,
+          });
+        }
       } catch {
         // Task 2 rejects stale, duplicate, or otherwise invalid local commands.
       }
@@ -299,9 +315,12 @@ export default function AiScreen() {
                 }
 
                 return (
-                  <AmountClarificationPlaceholder
+                  <AmountClarificationCard
                     item={item}
+                    itemIndex={itemIndex}
                     key={`meal-item-${itemIndex}`}
+                    onConfirm={confirmAmount}
+                    resolve={sessionItem.resolve}
                   />
                 );
               })}

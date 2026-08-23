@@ -7,6 +7,7 @@ import type {
   FoodIdentityClarificationMealAiItem,
   FoodIdentityClarificationImageMealAiItem,
   ImageMealAiItem,
+  ImageMealAiIntent,
   ImageMealInterpretResult,
   MealAiAmountClarification,
   MealAiFoodCandidate,
@@ -191,7 +192,7 @@ function parseIntent(value: unknown): MealAiIntent | null {
   };
 }
 
-function parseImageIntent(value: unknown): MealAiIntent | null {
+function parseImageIntent(value: unknown): ImageMealAiIntent | null {
   if (
     !isRecord(value) ||
     !isNormalizedCodePointString(value.query, 2, 120) ||
@@ -396,18 +397,17 @@ function parseAmountClarification(value: unknown): MealAiAmountClarification | n
   };
 }
 
-type IntentParser = (value: unknown) => MealAiIntent | null;
+type ParsedReadyItemFields<TIntent extends MealAiIntent> =
+  Omit<ReadyMealAiItem, 'mention' | 'intent'> & { intent: TIntent };
 
-type ParsedReadyItemFields = Omit<ReadyMealAiItem, 'mention'>;
+type ParsedClarificationItemFields<TIntent extends MealAiIntent> =
+  | (Omit<FoodIdentityClarificationMealAiItem, 'mention' | 'intent'> & { intent: TIntent })
+  | (Omit<AmountClarificationMealAiItem, 'mention' | 'intent'> & { intent: TIntent });
 
-type ParsedClarificationItemFields =
-  | Omit<FoodIdentityClarificationMealAiItem, 'mention'>
-  | Omit<AmountClarificationMealAiItem, 'mention'>;
-
-function parseReadyItemFields(
+function parseReadyItemFields<TIntent extends MealAiIntent>(
   value: Record<string, unknown>,
-  intentParser: IntentParser,
-): ParsedReadyItemFields | null {
+  intentParser: (value: unknown) => TIntent | null,
+): ParsedReadyItemFields<TIntent> | null {
   if (value.state !== 'ready' || value.clarification !== null) {
     return null;
   }
@@ -436,10 +436,10 @@ function parseReadyItemFields(
   };
 }
 
-function parseClarificationItemFields(
+function parseClarificationItemFields<TIntent extends MealAiIntent>(
   value: Record<string, unknown>,
-  intentParser: IntentParser,
-): ParsedClarificationItemFields | null {
+  intentParser: (value: unknown) => TIntent | null,
+): ParsedClarificationItemFields<TIntent> | null {
   if (
     value.state !== 'clarification_required' ||
     value.selection !== null ||

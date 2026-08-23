@@ -6,6 +6,11 @@ export type MealAiIntent = {
   unitHint: string | null;
 };
 
+export type ImageMealAiIntent = Omit<MealAiIntent, 'quantity' | 'unitHint'> & {
+  quantity: null;
+  unitHint: null;
+};
+
 export type MealAiResolvedFood = {
   foodId: number;
   displayName: string;
@@ -100,7 +105,7 @@ export type MealAiItem = ReadyMealAiItem | ClarificationRequiredMealAiItem;
 
 type ImageMealAiInterpretedItemBase = {
   observation: string;
-  intent: MealAiIntent;
+  intent: ImageMealAiIntent;
 };
 
 export type ReadyImageMealAiItem = ImageMealAiInterpretedItemBase & {

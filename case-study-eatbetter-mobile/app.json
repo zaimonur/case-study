@@ -5,7 +5,17 @@
     "version": "1.0.0",
     "orientation": "portrait",
     "userInterfaceStyle": "automatic",
-    "plugins": ["expo-router"],
+    "plugins": [
+      "expo-router",
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Öğün fotoğrafı seçebilmek için fotoğraflarına erişim gerekiyor.",
+          "cameraPermission": "Öğün fotoğrafı çekebilmek için kamerana erişim gerekiyor.",
+          "microphonePermission": false
+        }
+      ]
+    ],
     "ios": {
       "supportsTablet": true
     },

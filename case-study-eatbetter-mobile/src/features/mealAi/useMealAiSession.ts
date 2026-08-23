@@ -1,13 +1,19 @@
 import { useCallback, useEffect, useReducer, useRef } from 'react';
 
-import { interpretMealText, resolveMealSelection } from '../../api/mealAi';
+import {
+  interpretMealImage,
+  interpretMealText,
+  resolveMealSelection,
+} from '../../api/mealAi';
 import { isAbortError } from '../../api/client';
-import type { MealAiItem } from '../../domain/mealAi';
+import type { ImageMealInterpretResult, MealInterpretResult } from '../../domain/mealAi';
+import type { PreparedMealImage } from '../../domain/mealImage';
 import {
   initialMealAiSessionState,
   mealAiSessionReducer,
   prepareMealAiResolveCommand,
   reconstructResolvedMealAiItem,
+  validateMealAiImageInterpretCommand,
   validateMealAiInterpretCommand,
 } from './mealAiSession';
 import type {
@@ -15,6 +21,8 @@ import type {
   MealAiSessionResolveChoice,
   MealAiSessionState,
   MealAiSessionItem,
+  MealAiSessionDomainItem,
+  MealAiSessionSource,
 } from './mealAiSession';
 
 type InterpretRequestOwnership = {
@@ -31,10 +39,13 @@ type ResolveRequestOwnership = {
 
 export type UseMealAiSessionResult = {
   state: MealAiSessionState;
-  interpret: (text: string, locale: string) => Promise<void>;
+  interpretText: (text: string, locale: string) => Promise<void>;
+  interpretImage: (image: PreparedMealImage, locale: string) => Promise<void>;
   resolveItem: (itemIndex: number, choice: MealAiSessionResolveChoice) => Promise<void>;
   reset: () => void;
 };
+
+type MealAiInterpretResult = MealInterpretResult | ImageMealInterpretResult;
 
 function toError(value: unknown): Error {
   if (value instanceof Error) {
@@ -132,9 +143,12 @@ export function useMealAiSession(): UseMealAiSessionResult {
     activeResolvesRef.current.clear();
   }, []);
 
-  const interpret = useCallback(
-    async (text: string, locale: string): Promise<void> => {
-      validateMealAiInterpretCommand(text, locale);
+  const executeInterpret = useCallback(
+    async (
+      source: MealAiSessionSource,
+      locale: string,
+      request: (signal: AbortSignal) => Promise<MealAiInterpretResult>,
+    ): Promise<void> => {
       if (!lifecycleActiveRef.current) {
         throw new Error('The MealAI session controller is no longer active.');
       }
@@ -148,28 +162,23 @@ export function useMealAiSession(): UseMealAiSessionResult {
         controller: new AbortController(),
       };
       activeInterpretRef.current = ownership;
-      transition({ type: 'INTERPRET_STARTED' });
+      transition({ type: 'INTERPRET_STARTED', source });
 
       try {
-        const result = await interpretMealText(
-          {
-            text,
-            locale,
-          },
-          ownership.controller.signal,
-        );
+        const result = await request(ownership.controller.signal);
 
         if (!ownsInterpretRequest(ownership)) {
           return;
         }
 
         if (result.state === 'empty') {
-          transition({ type: 'INTERPRET_EMPTY', locale });
+          transition({ type: 'INTERPRET_EMPTY', source, locale });
         } else {
           transition({
             type: 'INTERPRET_SUCCEEDED',
+            source,
             locale,
-            items: result.items,
+            items: [...result.items],
           });
         }
       } catch (error) {
@@ -178,7 +187,7 @@ export function useMealAiSession(): UseMealAiSessionResult {
         }
 
         if (!isAbortError(error)) {
-          transition({ type: 'INTERPRET_FAILED', error: toError(error) });
+          transition({ type: 'INTERPRET_FAILED', source, error: toError(error) });
         }
       } finally {
         clearInterpretOwnership(ownership);
@@ -190,6 +199,30 @@ export function useMealAiSession(): UseMealAiSessionResult {
       ownsInterpretRequest,
       transition,
     ],
+  );
+
+  const interpretText = useCallback(
+    async (text: string, locale: string): Promise<void> => {
+      validateMealAiInterpretCommand(text, locale);
+      await executeInterpret(
+        'text',
+        locale,
+        (signal) => interpretMealText({ text, locale }, signal),
+      );
+    },
+    [executeInterpret],
+  );
+
+  const interpretImage = useCallback(
+    async (image: PreparedMealImage, locale: string): Promise<void> => {
+      validateMealAiImageInterpretCommand(image, locale);
+      await executeInterpret(
+        'image',
+        locale,
+        (signal) => interpretMealImage({ image, locale }, signal),
+      );
+    },
+    [executeInterpret],
   );
 
   const resolveItem = useCallback(
@@ -232,7 +265,7 @@ export function useMealAiSession(): UseMealAiSessionResult {
           return;
         }
 
-        let resolvedItem: MealAiItem;
+        let resolvedItem: MealAiSessionDomainItem;
         try {
           resolvedItem = reconstructResolvedMealAiItem(sessionItem, command.apiChoice, result);
         } catch (error) {
@@ -278,7 +311,8 @@ export function useMealAiSession(): UseMealAiSessionResult {
 
   return {
     state,
-    interpret,
+    interpretText,
+    interpretImage,
     resolveItem,
     reset,
   };

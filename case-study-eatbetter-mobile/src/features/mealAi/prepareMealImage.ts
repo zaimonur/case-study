@@ -1,4 +1,4 @@
-import { File } from 'expo-file-system';
+import { File, Paths } from 'expo-file-system';
 import { ImageManipulator, SaveFormat } from 'expo-image-manipulator';
 
 import {
@@ -48,6 +48,8 @@ const FALLBACK_POLICY: PreparationPolicy = {
   compression: 0.65,
 };
 
+const ownedPreparedImageUris = new Set<string>();
+
 function isPositiveSafeInteger(value: unknown): value is number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value > 0;
 }
@@ -84,6 +86,47 @@ function bestEffortDeleteGeneratedFile(uri: string | null): void {
     }
   } catch {
     // Cache cleanup failure must not fail otherwise successful preparation.
+  }
+}
+
+function isApplicationCacheUri(uri: string): boolean {
+  try {
+    const cacheUrl = new URL(Paths.cache.uri);
+    const fileUrl = new URL(uri);
+    if (
+      cacheUrl.protocol !== 'file:' ||
+      fileUrl.protocol !== 'file:' ||
+      fileUrl.search.length > 0 ||
+      fileUrl.hash.length > 0
+    ) {
+      return false;
+    }
+
+    const cacheRoot = cacheUrl.href.endsWith('/') ? cacheUrl.href : `${cacheUrl.href}/`;
+    return fileUrl.href.startsWith(cacheRoot);
+  } catch {
+    return false;
+  }
+}
+
+function registerPreparedMealImage(image: PreparedMealImage): PreparedMealImage {
+  ownedPreparedImageUris.add(image.uri);
+  return image;
+}
+
+export function releasePreparedMealImage(image: PreparedMealImage): void {
+  if (!ownedPreparedImageUris.has(image.uri) || !isApplicationCacheUri(image.uri)) {
+    return;
+  }
+
+  try {
+    const file = new File(image.uri);
+    if (file.exists) {
+      file.delete();
+    }
+    ownedPreparedImageUris.delete(image.uri);
+  } catch {
+    // Cleanup is best-effort; never surface cache deletion details to the UI.
   }
 }
 
@@ -204,7 +247,7 @@ export async function prepareMealImage(sourceUri: string): Promise<PreparedMealI
       FIRST_PASS_POLICY,
     );
     if (firstPass.sizeBytes <= MEAL_IMAGE_MAX_BYTES) {
-      return firstPass;
+      return registerPreparedMealImage(firstPass);
     }
 
     bestEffortDeleteGeneratedFile(firstPass.uri);
@@ -215,7 +258,7 @@ export async function prepareMealImage(sourceUri: string): Promise<PreparedMealI
       FALLBACK_POLICY,
     );
     if (fallback.sizeBytes <= MEAL_IMAGE_MAX_BYTES) {
-      return fallback;
+      return registerPreparedMealImage(fallback);
     }
 
     bestEffortDeleteGeneratedFile(fallback.uri);

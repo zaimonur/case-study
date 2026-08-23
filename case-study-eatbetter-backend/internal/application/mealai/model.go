@@ -1,4 +1,4 @@
-// Package mealai orchestrates provider-independent text meal interpretation.
+// Package mealai orchestrates provider-independent text and image meal interpretation.
 package mealai
 
 import (
@@ -7,6 +7,7 @@ import (
 	"github.com/zaimonur/case-study/case-study-eatbetter-backend/internal/application/foodamount"
 	"github.com/zaimonur/case-study/case-study-eatbetter-backend/internal/application/fooddetail"
 	"github.com/zaimonur/case-study/case-study-eatbetter-backend/internal/application/foodextraction"
+	"github.com/zaimonur/case-study/case-study-eatbetter-backend/internal/application/foodimageextraction"
 	"github.com/zaimonur/case-study/case-study-eatbetter-backend/internal/application/foodintent"
 	"github.com/zaimonur/case-study/case-study-eatbetter-backend/internal/application/foodresolver"
 	"github.com/zaimonur/case-study/case-study-eatbetter-backend/internal/application/nutritioncalc"
@@ -61,6 +62,29 @@ type Item struct {
 	Clarification *Clarification
 }
 
+// ImageRequest is the initial image interpretation input.
+type ImageRequest struct {
+	Image  foodimageextraction.ImageInput
+	Locale string
+}
+
+// ImageResult contains ordered image item interpretations.
+type ImageResult struct {
+	State State
+	Items []ImageItem
+}
+
+// ImageItem preserves visible evidence without treating it as a text mention.
+type ImageItem struct {
+	Observation   string
+	Intent        foodintent.FoodIntent
+	State         ItemState
+	Food          *ResolvedFood
+	Selection     *foodamount.Selection
+	Preview       *NutritionPreview
+	Clarification *Clarification
+}
+
 // NutritionPreview is the trusted deterministic nutrition for one selection.
 type NutritionPreview struct {
 	ResolvedGrams float64
@@ -95,6 +119,11 @@ type Clarification struct {
 // TextExtractor is the Task 1 application boundary.
 type TextExtractor interface {
 	Extract(context.Context, string) (foodextraction.TextFoodExtraction, error)
+}
+
+// ImageExtractor is the provider-independent visible food extraction boundary.
+type ImageExtractor interface {
+	Extract(context.Context, foodimageextraction.ImageInput) (foodimageextraction.ImageFoodExtraction, error)
 }
 
 // FoodResolver is the Task 2 application boundary.

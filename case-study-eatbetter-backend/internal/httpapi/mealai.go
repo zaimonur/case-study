@@ -23,6 +23,7 @@ const (
 // MealAIService is the initial and continuation meal AI application boundary.
 type MealAIService interface {
 	InterpretText(context.Context, mealai.Request) (mealai.Result, error)
+	InterpretImage(context.Context, mealai.ImageRequest) (mealai.ImageResult, error)
 	ResolveSelection(context.Context, mealai.ResolveSelectionRequest) (mealai.ResolveSelectionResult, error)
 }
 

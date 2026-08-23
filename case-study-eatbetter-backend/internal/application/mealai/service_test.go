@@ -120,7 +120,7 @@ func (fake *fakeNutritionCalculator) Calculate(ctx context.Context, request nutr
 }
 
 func newTestService(extractor TextExtractor, resolver FoodResolver, amount AmountResolver) *Service {
-	return NewService(extractor, resolver, amount, &fakeFoodDetailer{}, &fakeNutritionCalculator{})
+	return NewService(extractor, nil, resolver, amount, &fakeFoodDetailer{}, &fakeNutritionCalculator{})
 }
 
 func (fake *fakeAmountResolver) Resolve(ctx context.Context, request foodamount.Request) (foodamount.Resolution, error) {
@@ -197,7 +197,7 @@ func TestInterpretTextMixedMealPreservesOrderAndContinuesAfterClarification(t *t
 	ctx := context.WithValue(context.Background(), contextKey("request"), "same")
 	calculator := &fakeNutritionCalculator{}
 
-	result, err := NewService(extractor, resolver, amount, &fakeFoodDetailer{}, calculator).InterpretText(ctx, Request{Text: "source", Locale: "TR-tr"})
+	result, err := NewService(extractor, nil, resolver, amount, &fakeFoodDetailer{}, calculator).InterpretText(ctx, Request{Text: "source", Locale: "TR-tr"})
 	if err != nil {
 		t.Fatalf("InterpretText: %v", err)
 	}
@@ -286,7 +286,7 @@ func TestInterpretTextCalculatesReadyPreviewsSequentiallyFromSelections(t *testi
 	calculator := &fakeNutritionCalculator{results: []nutritioncalc.Result{
 		{FoodID: 1, ResolvedGrams: 25}, {FoodID: 2, ResolvedGrams: 119.75},
 	}}
-	result, err := NewService(extractor, resolver, amount, &fakeFoodDetailer{}, calculator).
+	result, err := NewService(extractor, nil, resolver, amount, &fakeFoodDetailer{}, calculator).
 		InterpretText(context.Background(), Request{Text: "meal", Locale: "tr"})
 	if err != nil {
 		t.Fatal(err)
@@ -312,14 +312,15 @@ func TestInterpretTextLaterNutritionFailureDiscardsAllItems(t *testing.T) {
 
 	cause := errors.New("nutrition storage failed")
 	result, err := NewService(
-		twoItemExtractor(),
+		twoItemExtractor(), nil,
+
 		&fakeFoodResolver{results: []foodresolver.Resolution{
 			resolvedIdentity(1, "First", "First", nil), resolvedIdentity(2, "Second", "Second", nil),
 		}},
 		&fakeAmountResolver{results: []foodamount.Resolution{resolvedGrams(1, 10), resolvedGrams(2, 20)}},
 		&fakeFoodDetailer{},
-		&fakeNutritionCalculator{results: []nutritioncalc.Result{{FoodID: 1, ResolvedGrams: 10}}, errs: []error{nil, cause}},
-	).InterpretText(context.Background(), Request{Text: "meal", Locale: "tr"})
+		&fakeNutritionCalculator{results: []nutritioncalc.Result{{FoodID: 1, ResolvedGrams: 10}}, errs: []error{nil, cause}}).
+		InterpretText(context.Background(), Request{Text: "meal", Locale: "tr"})
 	if !IsKind(err, ErrorResolutionFailure) || !errors.Is(err, cause) {
 		t.Fatalf("error = %v", err)
 	}
@@ -356,14 +357,15 @@ func TestInterpretTextAmountClarificationPreservesPortions(t *testing.T) {
 	amountClarification := &foodamount.Clarification{Portions: portions, AllowDirectGrams: true}
 	calculator := &fakeNutritionCalculator{}
 	result, err := NewService(
-		oneItemExtractor(),
+		oneItemExtractor(), nil,
+
 		&fakeFoodResolver{results: []foodresolver.Resolution{resolvedIdentity(8, "Elma", "Apple", nil)}},
 		&fakeAmountResolver{results: []foodamount.Resolution{{
 			State: foodamount.StateClarificationRequired, Reason: foodamount.ReasonUnitRequired,
 			Clarification: amountClarification,
 		}}},
-		&fakeFoodDetailer{}, calculator,
-	).InterpretText(context.Background(), Request{Text: "elma", Locale: "tr"})
+		&fakeFoodDetailer{}, calculator).
+		InterpretText(context.Background(), Request{Text: "elma", Locale: "tr"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -557,11 +559,12 @@ func TestInterpretTextMapsNutritionFailuresAndRejectsMalformedResults(t *testing
 				calculator.errs = []error{test.err}
 			}
 			result, err := NewService(
-				oneItemExtractor(),
+				oneItemExtractor(), nil,
+
 				&fakeFoodResolver{results: []foodresolver.Resolution{resolvedIdentity(1, "Food", "Food", nil)}},
 				&fakeAmountResolver{results: []foodamount.Resolution{resolvedGrams(1, 10)}},
-				&fakeFoodDetailer{}, calculator,
-			).InterpretText(context.Background(), Request{Text: "food", Locale: "tr"})
+				&fakeFoodDetailer{}, calculator).
+				InterpretText(context.Background(), Request{Text: "food", Locale: "tr"})
 			if !IsKind(err, test.wantKind) {
 				t.Fatalf("error = %v, want %s", err, test.wantKind)
 			}

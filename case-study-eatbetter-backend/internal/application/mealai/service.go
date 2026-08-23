@@ -10,6 +10,8 @@ import (
 	"github.com/zaimonur/case-study/case-study-eatbetter-backend/internal/application/foodamount"
 	"github.com/zaimonur/case-study/case-study-eatbetter-backend/internal/application/fooddetail"
 	"github.com/zaimonur/case-study/case-study-eatbetter-backend/internal/application/foodextraction"
+	"github.com/zaimonur/case-study/case-study-eatbetter-backend/internal/application/foodimageextraction"
+	"github.com/zaimonur/case-study/case-study-eatbetter-backend/internal/application/foodintent"
 	"github.com/zaimonur/case-study/case-study-eatbetter-backend/internal/application/foodlocale"
 	"github.com/zaimonur/case-study/case-study-eatbetter-backend/internal/application/foodresolver"
 	"github.com/zaimonur/case-study/case-study-eatbetter-backend/internal/application/foodsearch"
@@ -19,6 +21,7 @@ import (
 
 var (
 	_ TextExtractor       = (*foodextraction.Service)(nil)
+	_ ImageExtractor      = (*foodimageextraction.Service)(nil)
 	_ FoodResolver        = (*foodresolver.Service)(nil)
 	_ AmountResolver      = (*foodamount.Service)(nil)
 	_ FoodDetailer        = (*fooddetail.Service)(nil)
@@ -27,16 +30,18 @@ var (
 
 // Service coordinates extraction, identity resolution, and amount resolution.
 type Service struct {
-	extractor           TextExtractor
+	textExtractor       TextExtractor
+	imageExtractor      ImageExtractor
 	foodResolver        FoodResolver
 	amountResolver      AmountResolver
 	foodDetailer        FoodDetailer
 	nutritionCalculator NutritionCalculator
 }
 
-func NewService(extractor TextExtractor, foodResolver FoodResolver, amountResolver AmountResolver, foodDetailer FoodDetailer, nutritionCalculator NutritionCalculator) *Service {
+func NewService(textExtractor TextExtractor, imageExtractor ImageExtractor, foodResolver FoodResolver, amountResolver AmountResolver, foodDetailer FoodDetailer, nutritionCalculator NutritionCalculator) *Service {
 	return &Service{
-		extractor: extractor, foodResolver: foodResolver, amountResolver: amountResolver,
+		textExtractor: textExtractor, imageExtractor: imageExtractor,
+		foodResolver: foodResolver, amountResolver: amountResolver,
 		foodDetailer: foodDetailer, nutritionCalculator: nutritionCalculator,
 	}
 }
@@ -48,28 +53,95 @@ func (s *Service) InterpretText(ctx context.Context, request Request) (Result, e
 		return Result{}, newError(ErrorInvalidInput, err)
 	}
 
-	extraction, err := s.extractor.Extract(ctx, request.Text)
+	extraction, err := s.textExtractor.Extract(ctx, request.Text)
 	if err != nil {
 		return Result{}, mapExtractionError(err)
 	}
-	if len(extraction.Items) == 0 {
-		return Result{State: StateEmpty, Items: []Item{}}, nil
+	inputs := make([]interpretationInput, 0, len(extraction.Items))
+	for _, extracted := range extraction.Items {
+		inputs = append(inputs, interpretationInput{Evidence: extracted.Mention, Intent: extracted.Intent})
+	}
+	state, interpreted, err := s.interpret(ctx, locale.Exact, inputs)
+	if err != nil {
+		return Result{}, err
+	}
+	items := make([]Item, 0, len(interpreted))
+	for _, item := range interpreted {
+		items = append(items, Item{
+			Mention: item.Evidence, Intent: item.Intent, State: item.State,
+			Food: item.Food, Selection: item.Selection, Preview: item.Preview, Clarification: item.Clarification,
+		})
+	}
+	return Result{State: state, Items: items}, nil
+}
+
+// InterpretImage returns a stable initial image interpretation without persistence.
+func (s *Service) InterpretImage(ctx context.Context, request ImageRequest) (ImageResult, error) {
+	locale, err := foodlocale.Parse(request.Locale)
+	if err != nil {
+		return ImageResult{}, newError(ErrorInvalidInput, err)
+	}
+	if s == nil || s.imageExtractor == nil {
+		return ImageResult{}, newError(ErrorAIUnavailable, fmt.Errorf("image extractor is unavailable"))
+	}
+	extraction, err := s.imageExtractor.Extract(ctx, request.Image)
+	if err != nil {
+		return ImageResult{}, mapImageExtractionError(err)
+	}
+	inputs := make([]interpretationInput, 0, len(extraction.Items))
+	for _, extracted := range extraction.Items {
+		inputs = append(inputs, interpretationInput{Evidence: extracted.Observation, Intent: extracted.Intent})
+	}
+	state, interpreted, err := s.interpret(ctx, locale.Exact, inputs)
+	if err != nil {
+		return ImageResult{}, err
+	}
+	items := make([]ImageItem, 0, len(interpreted))
+	for _, item := range interpreted {
+		items = append(items, ImageItem{
+			Observation: item.Evidence, Intent: item.Intent, State: item.State,
+			Food: item.Food, Selection: item.Selection, Preview: item.Preview, Clarification: item.Clarification,
+		})
+	}
+	return ImageResult{State: state, Items: items}, nil
+}
+
+type interpretationInput struct {
+	Evidence string
+	Intent   foodintent.FoodIntent
+}
+
+type interpretedItem struct {
+	Evidence      string
+	Intent        foodintent.FoodIntent
+	State         ItemState
+	Food          *ResolvedFood
+	Selection     *foodamount.Selection
+	Preview       *NutritionPreview
+	Clarification *Clarification
+}
+
+// interpret is the single deterministic identity, amount, and nutrition path
+// shared by text and image extraction sources.
+func (s *Service) interpret(ctx context.Context, locale string, inputs []interpretationInput) (State, []interpretedItem, error) {
+	if len(inputs) == 0 {
+		return StateEmpty, []interpretedItem{}, nil
 	}
 
-	items := make([]Item, 0, len(extraction.Items))
+	items := make([]interpretedItem, 0, len(inputs))
 	overallState := StateReady
-	for _, extracted := range extraction.Items {
+	for _, input := range inputs {
 		identity, err := s.foodResolver.Resolve(ctx, foodresolver.Request{
-			Intent: extracted.Intent, Locale: locale.Exact,
+			Intent: input.Intent, Locale: locale,
 		})
 		if err != nil {
-			return Result{}, mapFoodResolverError(err)
+			return "", nil, mapFoodResolverError(err)
 		}
 		if err := validateFoodResolution(identity); err != nil {
-			return Result{}, newError(ErrorResolutionFailure, err)
+			return "", nil, newError(ErrorResolutionFailure, err)
 		}
 
-		item := Item{Mention: extracted.Mention, Intent: extracted.Intent}
+		item := interpretedItem{Evidence: input.Evidence, Intent: input.Intent}
 		switch identity.State {
 		case foodresolver.StateAmbiguous, foodresolver.StateNotFound:
 			item.State = ItemClarificationRequired
@@ -78,35 +150,31 @@ func (s *Service) InterpretText(ctx context.Context, request Request) (Result, e
 		case foodresolver.StateResolved:
 			item.Food = resolvedFood(identity.Resolved)
 			amount, err := s.amountResolver.Resolve(ctx, foodamount.Request{
-				FoodID: identity.Resolved.FoodID, Intent: extracted.Intent, Locale: locale.Exact,
+				FoodID: identity.Resolved.FoodID, Intent: input.Intent, Locale: locale,
 			})
 			if err != nil {
-				return Result{}, mapAmountResolverError(err)
+				return "", nil, mapAmountResolverError(err)
 			}
 			if err := validateAmountResolution(amount, identity.Resolved.FoodID); err != nil {
-				return Result{}, newError(ErrorResolutionFailure, err)
+				return "", nil, newError(ErrorResolutionFailure, err)
 			}
 			if amount.State == foodamount.StateResolved {
 				preview, err := s.calculatePreview(ctx, amount.Selection)
 				if err != nil {
-					return Result{}, err
+					return "", nil, err
 				}
 				item.State = ItemReady
 				item.Selection = amount.Selection
 				item.Preview = preview
 			} else {
 				item.State = ItemClarificationRequired
-				item.Clarification = &Clarification{
-					Kind: ClarificationAmount, Reason: string(amount.Reason),
-					Candidates: []FoodOption{}, Portions: amount.Clarification.Portions,
-					AllowDirectGrams: amount.Clarification.AllowDirectGrams,
-				}
+				item.Clarification = amountClarification(amount)
 				overallState = StateClarificationRequired
 			}
 		}
 		items = append(items, item)
 	}
-	return Result{State: overallState, Items: items}, nil
+	return overallState, items, nil
 }
 
 func validateFoodResolution(resolution foodresolver.Resolution) error {
@@ -254,6 +322,27 @@ func mapExtractionError(err error) error {
 	case foodextraction.IsKind(err, foodextraction.ErrorProviderFailure):
 		return newError(ErrorAIFailure, err)
 	case foodextraction.IsKind(err, foodextraction.ErrorCanceled):
+		return newError(ErrorCanceled, err)
+	default:
+		return newError(ErrorAIFailure, err)
+	}
+}
+
+func mapImageExtractionError(err error) error {
+	switch {
+	case foodimageextraction.IsKind(err, foodimageextraction.ErrorInvalidInput):
+		return newError(ErrorInvalidInput, err)
+	case foodimageextraction.IsKind(err, foodimageextraction.ErrorProviderConfiguration):
+		return newError(ErrorAIUnavailable, err)
+	case foodimageextraction.IsKind(err, foodimageextraction.ErrorRateLimit):
+		return newError(ErrorAIRateLimited, err)
+	case foodimageextraction.IsKind(err, foodimageextraction.ErrorTimeout):
+		return newError(ErrorAITimeout, err)
+	case foodimageextraction.IsKind(err, foodimageextraction.ErrorInvalidProviderOutput):
+		return newError(ErrorAIInvalidResponse, err)
+	case foodimageextraction.IsKind(err, foodimageextraction.ErrorProviderFailure):
+		return newError(ErrorAIFailure, err)
+	case foodimageextraction.IsKind(err, foodimageextraction.ErrorCanceled):
 		return newError(ErrorCanceled, err)
 	default:
 		return newError(ErrorAIFailure, err)

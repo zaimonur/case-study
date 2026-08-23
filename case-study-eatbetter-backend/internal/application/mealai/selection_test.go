@@ -30,7 +30,7 @@ func TestResolveSelectionDirectGramsPreservesIntentAndBuildsNutritionRequest(t *
 		Nutrition: nutritioncalc.Nutrition{Calories: zero},
 	}}}
 	extractor, resolver := &fakeTextExtractor{}, &fakeFoodResolver{}
-	service := NewService(extractor, resolver, amount, detailer, calculator)
+	service := NewService(extractor, nil, resolver, amount, detailer, calculator)
 	type contextKey string
 	ctx := context.WithValue(context.Background(), contextKey("request"), "same")
 
@@ -78,7 +78,7 @@ func TestResolveSelectionPortionUsesTrustedSelectionWithoutLocalMath(t *testing.
 		State: foodamount.StateResolved, Reason: foodamount.ReasonExplicitPortionSelection, Selection: selection,
 	}}}
 	calculator := &fakeNutritionCalculator{results: []nutritioncalc.Result{{FoodID: 7, ResolvedGrams: 83.25}}}
-	service := NewService(&fakeTextExtractor{}, &fakeFoodResolver{}, amount, &fakeFoodDetailer{detail: validDetail(7)}, calculator)
+	service := NewService(&fakeTextExtractor{}, nil, &fakeFoodResolver{}, amount, &fakeFoodDetailer{detail: validDetail(7)}, calculator)
 
 	result, err := service.ResolveSelection(context.Background(), ResolveSelectionRequest{
 		FoodID: 7, Locale: "tr", Intent: foodintent.FoodIntent{Query: "elma"},
@@ -109,11 +109,12 @@ func TestResolveSelectionFoodIdentityCanReturnAmountClarification(t *testing.T) 
 	}}}
 	calculator := &fakeNutritionCalculator{}
 	result, err := NewService(
-		&fakeTextExtractor{}, &fakeFoodResolver{}, amount,
-		&fakeFoodDetailer{detail: validDetail(7)}, calculator,
-	).ResolveSelection(context.Background(), ResolveSelectionRequest{
-		FoodID: 7, Locale: "tr", Intent: intent, Choice: ExplicitChoice{Kind: ChoiceFoodIdentity},
-	})
+		&fakeTextExtractor{}, nil,
+		&fakeFoodResolver{}, amount,
+		&fakeFoodDetailer{detail: validDetail(7)}, calculator).
+		ResolveSelection(context.Background(), ResolveSelectionRequest{
+			FoodID: 7, Locale: "tr", Intent: intent, Choice: ExplicitChoice{Kind: ChoiceFoodIdentity},
+		})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -144,7 +145,7 @@ func TestResolveSelectionRejectsLocalInputBeforeDependencies(t *testing.T) {
 	}
 	for _, request := range tests {
 		detailer, amount, calculator := &fakeFoodDetailer{}, &fakeAmountResolver{}, &fakeNutritionCalculator{}
-		result, err := NewService(&fakeTextExtractor{}, &fakeFoodResolver{}, amount, detailer, calculator).ResolveSelection(context.Background(), request)
+		result, err := NewService(&fakeTextExtractor{}, nil, &fakeFoodResolver{}, amount, detailer, calculator).ResolveSelection(context.Background(), request)
 		if !IsKind(err, ErrorInvalidInput) {
 			t.Errorf("request %#v error = %v", request, err)
 		}
@@ -162,9 +163,10 @@ func TestResolveSelectionMapsNotFoundAndDiscardsPartialResult(t *testing.T) {
 	}
 	t.Run("food detail", func(t *testing.T) {
 		result, err := NewService(
-			&fakeTextExtractor{}, &fakeFoodResolver{}, &fakeAmountResolver{},
-			&fakeFoodDetailer{err: fooddetail.ErrNotFound}, &fakeNutritionCalculator{},
-		).ResolveSelection(context.Background(), request)
+			&fakeTextExtractor{}, nil,
+			&fakeFoodResolver{}, &fakeAmountResolver{},
+			&fakeFoodDetailer{err: fooddetail.ErrNotFound}, &fakeNutritionCalculator{}).
+			ResolveSelection(context.Background(), request)
 		if !IsKind(err, ErrorFoodNotFound) || result != (ResolveSelectionResult{}) {
 			t.Fatalf("result/error = %#v/%v", result, err)
 		}
@@ -173,10 +175,11 @@ func TestResolveSelectionMapsNotFoundAndDiscardsPartialResult(t *testing.T) {
 		portionID, quantity := int64(1), 1.0
 		request.Choice = ExplicitChoice{Kind: ChoicePortion, PortionID: &portionID, Quantity: &quantity}
 		result, err := NewService(
-			&fakeTextExtractor{}, &fakeFoodResolver{},
+			&fakeTextExtractor{}, nil,
+			&fakeFoodResolver{},
 			&fakeAmountResolver{portionErrs: []error{&foodamount.Error{Kind: foodamount.ErrorPortionNotFound}}},
-			&fakeFoodDetailer{detail: validDetail(7)}, &fakeNutritionCalculator{},
-		).ResolveSelection(context.Background(), request)
+			&fakeFoodDetailer{detail: validDetail(7)}, &fakeNutritionCalculator{}).
+			ResolveSelection(context.Background(), request)
 		if !IsKind(err, ErrorPortionNotFound) || result != (ResolveSelectionResult{}) {
 			t.Fatalf("result/error = %#v/%v", result, err)
 		}
@@ -192,19 +195,21 @@ func TestResolveSelectionRejectsMalformedDependencySuccess(t *testing.T) {
 	}
 	t.Run("food detail identity mismatch", func(t *testing.T) {
 		result, err := NewService(
-			&fakeTextExtractor{}, &fakeFoodResolver{}, &fakeAmountResolver{},
-			&fakeFoodDetailer{detail: validDetail(8)}, &fakeNutritionCalculator{},
-		).ResolveSelection(context.Background(), request)
+			&fakeTextExtractor{}, nil,
+			&fakeFoodResolver{}, &fakeAmountResolver{},
+			&fakeFoodDetailer{detail: validDetail(8)}, &fakeNutritionCalculator{}).
+			ResolveSelection(context.Background(), request)
 		if !IsKind(err, ErrorResolutionFailure) || result != (ResolveSelectionResult{}) {
 			t.Fatalf("result/error = %#v/%v", result, err)
 		}
 	})
 	t.Run("nutrition food mismatch", func(t *testing.T) {
 		result, err := NewService(
-			&fakeTextExtractor{}, &fakeFoodResolver{}, &fakeAmountResolver{results: []foodamount.Resolution{resolvedGrams(7, grams)}},
+			&fakeTextExtractor{}, nil,
+			&fakeFoodResolver{}, &fakeAmountResolver{results: []foodamount.Resolution{resolvedGrams(7, grams)}},
 			&fakeFoodDetailer{detail: validDetail(7)},
-			&fakeNutritionCalculator{results: []nutritioncalc.Result{{FoodID: 8, ResolvedGrams: grams}}},
-		).ResolveSelection(context.Background(), request)
+			&fakeNutritionCalculator{results: []nutritioncalc.Result{{FoodID: 8, ResolvedGrams: grams}}}).
+			ResolveSelection(context.Background(), request)
 		if !IsKind(err, ErrorResolutionFailure) || result != (ResolveSelectionResult{}) {
 			t.Fatalf("result/error = %#v/%v", result, err)
 		}
@@ -293,12 +298,13 @@ func TestResolveSelectionRejectsMalformedPersistedFoodDetailBeforeAmount(t *test
 			calculator := &fakeNutritionCalculator{}
 
 			result, err := NewService(
-				&fakeTextExtractor{},
+				&fakeTextExtractor{}, nil,
+
 				&fakeFoodResolver{},
 				amount,
 				detailer,
-				calculator,
-			).ResolveSelection(context.Background(), request)
+				calculator).
+				ResolveSelection(context.Background(), request)
 
 			if !IsKind(err, ErrorResolutionFailure) {
 				t.Fatalf("error = %v, want resolution_failure", err)
@@ -400,17 +406,18 @@ func TestResolveSelectionRejectsExplicitChoiceAmountShapeMismatch(t *testing.T) 
 			calculator := &fakeNutritionCalculator{}
 
 			result, err := NewService(
-				&fakeTextExtractor{},
+				&fakeTextExtractor{}, nil,
+
 				&fakeFoodResolver{},
 				amount,
 				&fakeFoodDetailer{detail: validDetail(7)},
-				calculator,
-			).ResolveSelection(context.Background(), ResolveSelectionRequest{
-				FoodID: 7,
-				Locale: "tr",
-				Intent: foodintent.FoodIntent{Query: "elma"},
-				Choice: tt.choice,
-			})
+				calculator).
+				ResolveSelection(context.Background(), ResolveSelectionRequest{
+					FoodID: 7,
+					Locale: "tr",
+					Intent: foodintent.FoodIntent{Query: "elma"},
+					Choice: tt.choice,
+				})
 
 			if !IsKind(err, ErrorResolutionFailure) {
 				t.Fatalf("error = %v, want resolution_failure", err)
@@ -480,21 +487,22 @@ func TestResolveSelectionPortionChoiceQuantityOverridesIntentQuantity(t *testing
 	}
 
 	result, err := NewService(
-		&fakeTextExtractor{},
+		&fakeTextExtractor{}, nil,
+
 		&fakeFoodResolver{},
 		amount,
 		&fakeFoodDetailer{detail: validDetail(7)},
-		calculator,
-	).ResolveSelection(context.Background(), ResolveSelectionRequest{
-		FoodID: 7,
-		Locale: "tr",
-		Intent: intent,
-		Choice: ExplicitChoice{
-			Kind:      ChoicePortion,
-			PortionID: &portionID,
-			Quantity:  &choiceQuantity,
-		},
-	})
+		calculator).
+		ResolveSelection(context.Background(), ResolveSelectionRequest{
+			FoodID: 7,
+			Locale: "tr",
+			Intent: intent,
+			Choice: ExplicitChoice{
+				Kind:      ChoicePortion,
+				PortionID: &portionID,
+				Quantity:  &choiceQuantity,
+			},
+		})
 	if err != nil {
 		t.Fatalf("ResolveSelection: %v", err)
 	}

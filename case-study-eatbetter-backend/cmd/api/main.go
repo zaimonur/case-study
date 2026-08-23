@@ -11,10 +11,12 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/zaimonur/case-study/case-study-eatbetter-backend/internal/adapters/gemini"
 	"github.com/zaimonur/case-study/case-study-eatbetter-backend/internal/adapters/groq"
 	"github.com/zaimonur/case-study/case-study-eatbetter-backend/internal/application/foodamount"
 	"github.com/zaimonur/case-study/case-study-eatbetter-backend/internal/application/fooddetail"
 	"github.com/zaimonur/case-study/case-study-eatbetter-backend/internal/application/foodextraction"
+	"github.com/zaimonur/case-study/case-study-eatbetter-backend/internal/application/foodimageextraction"
 	"github.com/zaimonur/case-study/case-study-eatbetter-backend/internal/application/foodresolver"
 	"github.com/zaimonur/case-study/case-study-eatbetter-backend/internal/application/foodsearch"
 	"github.com/zaimonur/case-study/case-study-eatbetter-backend/internal/application/mealai"
@@ -69,8 +71,17 @@ func run() error {
 		}
 	}
 	extractionService := foodextraction.NewService(textExtractor)
+	var imageExtractor foodimageextraction.Extractor
+	if strings.TrimSpace(cfg.Gemini.APIKey) != "" {
+		imageExtractor, err = gemini.NewExtractor(cfg.Gemini)
+		if err != nil {
+			return fmt.Errorf("construct Gemini image extractor: %w", err)
+		}
+	}
+	imageExtractionService := foodimageextraction.NewService(imageExtractor)
 	mealAIService := mealai.NewService(
-		extractionService, foodResolverService, foodAmountService, foodDetailService, nutritionService,
+		extractionService, imageExtractionService,
+		foodResolverService, foodAmountService, foodDetailService, nutritionService,
 	)
 	handler := httpapi.NewRouter(
 		logger, cfg.Database.PingTimeout, pool.Ping,

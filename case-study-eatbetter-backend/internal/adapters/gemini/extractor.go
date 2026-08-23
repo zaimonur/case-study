@@ -143,7 +143,7 @@ func (e *Extractor) Extract(ctx context.Context, input foodimageextraction.Image
 		if errors.Is(err, errResponseTooLarge) {
 			return foodimageextraction.ImageFoodExtraction{}, foodimageextraction.NewError(foodimageextraction.ErrorInvalidProviderOutput, errResponseTooLarge)
 		}
-		return foodimageextraction.ImageFoodExtraction{}, foodimageextraction.NewError(foodimageextraction.ErrorProviderFailure, fmt.Errorf("read Gemini response"))
+		return foodimageextraction.ImageFoodExtraction{}, classifyRequestError(ctx, callContext)
 	}
 	extraction, err := decodeResponse(responseBody)
 	if err != nil {

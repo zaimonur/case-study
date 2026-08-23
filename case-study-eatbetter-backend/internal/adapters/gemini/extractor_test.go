@@ -324,6 +324,56 @@ func TestExtractorConfiguredTimeout(t *testing.T) {
 	}
 }
 
+func TestExtractorConfiguredTimeoutWhileReadingResponseBody(t *testing.T) {
+	t.Parallel()
+
+	var calls atomic.Int32
+	server, headersFlushed, handlerExited := incompleteBodyServer(t, &calls)
+	defer server.Close()
+
+	_, err := newTestExtractor(t, server.URL, 50*time.Millisecond).Extract(context.Background(), testInput())
+	if !foodimageextraction.IsKind(err, foodimageextraction.ErrorTimeout) {
+		t.Fatalf("error = %v, want timeout", err)
+	}
+	select {
+	case <-headersFlushed:
+	default:
+		t.Fatal("request failed before response headers were flushed")
+	}
+	if calls.Load() > 1 {
+		t.Fatalf("requests = %d, want at most 1", calls.Load())
+	}
+	waitForSignal(t, handlerExited, "server handler exit")
+}
+
+func TestExtractorCallerCancellationWhileReadingResponseBody(t *testing.T) {
+	t.Parallel()
+
+	var calls atomic.Int32
+	server, headersFlushed, handlerExited := incompleteBodyServer(t, &calls)
+	defer server.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	extractor := newTestExtractor(t, server.URL, time.Second)
+	errorResult := make(chan error, 1)
+	go func() {
+		_, err := extractor.Extract(ctx, testInput())
+		errorResult <- err
+	}()
+
+	waitForSignal(t, headersFlushed, "response headers flush")
+	cancel()
+	err := waitForError(t, errorResult)
+	if !foodimageextraction.IsKind(err, foodimageextraction.ErrorCanceled) {
+		t.Fatalf("error = %v, want canceled", err)
+	}
+	if calls.Load() > 1 {
+		t.Fatalf("requests = %d, want at most 1", calls.Load())
+	}
+	waitForSignal(t, handlerExited, "server handler exit")
+}
+
 func TestExtractorHonorsCallerCancellation(t *testing.T) {
 	t.Parallel()
 
@@ -419,4 +469,55 @@ type roundTripperFunc func(*http.Request) (*http.Response, error)
 
 func (function roundTripperFunc) RoundTrip(request *http.Request) (*http.Response, error) {
 	return function(request)
+}
+
+func incompleteBodyServer(t *testing.T, calls *atomic.Int32) (*httptest.Server, <-chan struct{}, <-chan struct{}) {
+	t.Helper()
+
+	headersFlushed := make(chan struct{})
+	handlerExited := make(chan struct{}, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		call := calls.Add(1)
+		defer func() {
+			select {
+			case handlerExited <- struct{}{}:
+			default:
+			}
+		}()
+
+		flusher, ok := response.(http.Flusher)
+		if !ok {
+			t.Error("test response writer does not support flushing")
+			return
+		}
+		response.WriteHeader(http.StatusOK)
+		flusher.Flush()
+		if call == 1 {
+			close(headersFlushed)
+		}
+		<-request.Context().Done()
+	}))
+	return server, headersFlushed, handlerExited
+}
+
+func waitForSignal(t *testing.T, signal <-chan struct{}, description string) {
+	t.Helper()
+
+	select {
+	case <-signal:
+	case <-time.After(time.Second):
+		t.Fatalf("timed out waiting for %s", description)
+	}
+}
+
+func waitForError(t *testing.T, result <-chan error) error {
+	t.Helper()
+
+	select {
+	case err := <-result:
+		return err
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for extractor result")
+		return nil
+	}
 }

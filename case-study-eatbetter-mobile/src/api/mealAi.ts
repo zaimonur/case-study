@@ -19,12 +19,82 @@ import type {
   ResolveMealSelectionInput,
 } from '../domain/mealAi';
 import type { NutritionValues } from '../domain/nutrition';
-import { ApiError, postJson } from './client';
+import { ApiError, isAbortError, postJson, type ApiJsonResult } from './client';
 
 export type InterpretMealTextInput = {
   text: string;
   locale: string;
 };
+
+const MEAL_AI_REQUEST_TIMEOUT_MS = 30_000;
+
+type MealAiAbortSource = 'external' | 'timeout' | null;
+
+function createMealAiAbortError(): Error {
+  const error = new Error('The MealAI request was cancelled.');
+  error.name = 'AbortError';
+  return error;
+}
+
+async function postMealAiJson(
+  path: string,
+  body: unknown,
+  externalSignal?: AbortSignal,
+): Promise<ApiJsonResult> {
+  if (externalSignal?.aborted) {
+    throw createMealAiAbortError();
+  }
+
+  const internalController = new AbortController();
+  const abortOwnership: { source: MealAiAbortSource } = { source: null };
+
+  const claimAbort = (source: Exclude<MealAiAbortSource, null>) => {
+    if (abortOwnership.source !== null) {
+      return;
+    }
+
+    abortOwnership.source = source;
+    internalController.abort();
+  };
+
+  const handleExternalAbort = () => {
+    claimAbort('external');
+  };
+
+  externalSignal?.addEventListener('abort', handleExternalAbort, { once: true });
+  const timeoutId = setTimeout(() => {
+    claimAbort('timeout');
+  }, MEAL_AI_REQUEST_TIMEOUT_MS);
+
+  try {
+    return await postJson(path, {
+      body,
+      signal: internalController.signal,
+    });
+  } catch (error) {
+    if (abortOwnership.source === 'timeout') {
+      throw new ApiError(
+        'timeout',
+        'The MealAI request timed out.',
+        {},
+        { cause: error },
+      );
+    }
+
+    if (abortOwnership.source === 'external') {
+      if (isAbortError(error)) {
+        throw error;
+      }
+
+      throw createMealAiAbortError();
+    }
+
+    throw error;
+  } finally {
+    clearTimeout(timeoutId);
+    externalSignal?.removeEventListener('abort', handleExternalAbort);
+  }
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -503,13 +573,14 @@ export async function interpretMealText(
     throw new ApiError('config', 'The meal interpretation input is invalid.');
   }
 
-  const { data, httpStatus, requestId } = await postJson('/ai/meals/interpret', {
-    body: {
+  const { data, httpStatus, requestId } = await postMealAiJson(
+    '/ai/meals/interpret',
+    {
       text: input.text,
       locale: input.locale,
     },
     signal,
-  });
+  );
 
   const result = parseInterpretResult(data);
   if (result === null) {
@@ -537,8 +608,9 @@ export async function resolveMealSelection(
   validateIntentInput(input.intent);
   const choice = serializeChoice(input.choice);
 
-  const { data, httpStatus, requestId } = await postJson('/ai/meals/resolve', {
-    body: {
+  const { data, httpStatus, requestId } = await postMealAiJson(
+    '/ai/meals/resolve',
+    {
       food_id: input.foodId,
       locale: input.locale,
       intent: {
@@ -549,7 +621,7 @@ export async function resolveMealSelection(
       choice,
     },
     signal,
-  });
+  );
 
   const result = parseResolveResult(data);
   if (result === null || result.food.foodId !== input.foodId) {

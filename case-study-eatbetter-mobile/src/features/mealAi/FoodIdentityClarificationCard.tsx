@@ -1,6 +1,7 @@
 import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import type { FoodIdentityClarificationMealAiItem } from '../../domain/mealAi';
+import { getMealAiErrorPresentation } from './mealAiErrorPresentation';
 import type { MealAiResolveRuntime } from './mealAiSession';
 
 type FoodIdentityClarificationCardProps = {
@@ -17,6 +18,9 @@ export function FoodIdentityClarificationCard({
   resolve,
 }: FoodIdentityClarificationCardProps) {
   const isResolving = resolve.status === 'resolving';
+  const errorPresentation =
+    resolve.status === 'error' ? getMealAiErrorPresentation(resolve.error) : null;
+  const canResolve = !isResolving && (errorPresentation === null || errorPresentation.retryable);
   const candidates = item.clarification.candidates;
 
   return (
@@ -33,14 +37,14 @@ export function FoodIdentityClarificationCard({
           {candidates.map((candidate, candidateIndex) => (
             <Pressable
               accessibilityRole="button"
-              accessibilityState={{ disabled: isResolving }}
-              disabled={isResolving}
+              accessibilityState={{ disabled: !canResolve }}
+              disabled={!canResolve}
               key={`${candidate.foodId}-${candidateIndex}`}
               onPress={() => void onSelectCandidate(itemIndex, candidate.foodId)}
               style={({ pressed }) => [
                 styles.candidate,
-                isResolving && styles.candidateDisabled,
-                pressed && !isResolving && styles.candidatePressed,
+                !canResolve && styles.candidateDisabled,
+                pressed && canResolve && styles.candidatePressed,
               ]}
             >
               <Text style={styles.candidateName}>{candidate.displayName}</Text>
@@ -62,9 +66,9 @@ export function FoodIdentityClarificationCard({
         </View>
       ) : null}
 
-      {resolve.status === 'error' ? (
+      {errorPresentation !== null ? (
         <Text accessibilityLiveRegion="polite" style={styles.errorText}>
-          Seçim doğrulanamadı. Tekrar deneyebilirsin.
+          {errorPresentation.message}
         </Text>
       ) : null}
     </View>

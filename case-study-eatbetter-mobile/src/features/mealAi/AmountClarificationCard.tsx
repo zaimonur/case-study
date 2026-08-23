@@ -6,6 +6,7 @@ import {
   PortionSelector,
   type PortionSelection,
 } from '../food/PortionSelector';
+import { getMealAiErrorPresentation } from './mealAiErrorPresentation';
 import type { MealAiResolveRuntime, MealAiSessionResolveChoice } from './mealAiSession';
 
 export type AmountResolveChoice = Exclude<
@@ -68,7 +69,10 @@ export function AmountClarificationCard({
   const [selection, setSelection] = useState<PortionSelection>({ kind: 'none' });
   const choice = useMemo(() => buildAmountResolveChoice(item, selection), [item, selection]);
   const isResolving = resolve.status === 'resolving';
-  const canConfirm = choice !== null && !isResolving;
+  const errorPresentation =
+    resolve.status === 'error' ? getMealAiErrorPresentation(resolve.error) : null;
+  const canRetry = errorPresentation === null || errorPresentation.retryable;
+  const canConfirm = choice !== null && !isResolving && canRetry;
 
   return (
     <View style={styles.card}>
@@ -113,9 +117,9 @@ export function AmountClarificationCard({
         </View>
       ) : null}
 
-      {resolve.status === 'error' ? (
+      {errorPresentation !== null ? (
         <Text accessibilityLiveRegion="polite" style={styles.errorText}>
-          Miktar doğrulanamadı. Tekrar deneyebilirsin.
+          {errorPresentation.message}
         </Text>
       ) : null}
     </View>

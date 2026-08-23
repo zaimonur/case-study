@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Keyboard,
@@ -28,6 +28,7 @@ import {
   mapReadyMealAiItemToMealItem,
 } from '../../src/features/mealAi/mapReadyMealAiItemToMealItem';
 import { MealAiReviewCard } from '../../src/features/mealAi/MealAiReviewCard';
+import { getMealAiErrorPresentation } from '../../src/features/mealAi/mealAiErrorPresentation';
 import { isMealAiSessionFullyReady } from '../../src/features/mealAi/mealAiSession';
 import type {
   MealAiSessionItem,
@@ -83,17 +84,29 @@ export default function AiScreen() {
   const interpretCommandInFlightRef = useRef(false);
   const saveInFlightRef = useRef(false);
   const invalidatedReviewItemsRef = useRef(new WeakSet<MealAiSessionItem[]>());
+  const mountedRef = useRef(true);
 
   const isInterpreting = state.status === 'interpreting';
   const saveIsRunning = saveStatus === 'saving';
   const canSubmit = state.status === 'idle' && draft.trim().length > 0 && !saveIsRunning;
   const retryText = lastSubmittedTextRef.current;
+  const interpretErrorPresentation =
+    state.status === 'error' ? getMealAiErrorPresentation(state.error) : null;
   const canRetry =
     state.status === 'error' &&
+    interpretErrorPresentation?.retryable === true &&
     retryText !== null &&
     retryText.trim().length > 0 &&
     !saveIsRunning;
   const readyMealItems = useMemo(() => mapFullyReadySessionToMealItems(state), [state]);
+
+  useEffect(() => {
+    mountedRef.current = true;
+
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   const runInterpret = useCallback(
     async (submittedText: string) => {
@@ -128,6 +141,7 @@ export default function AiScreen() {
     const submittedText = lastSubmittedTextRef.current;
     if (
       state.status !== 'error' ||
+      !getMealAiErrorPresentation(state.error).retryable ||
       submittedText === null ||
       submittedText.trim().length === 0 ||
       interpretCommandInFlightRef.current ||
@@ -140,11 +154,11 @@ export default function AiScreen() {
     setSaveStatus('idle');
     Keyboard.dismiss();
     await runInterpret(submittedText);
-  }, [runInterpret, state.status]);
+  }, [runInterpret, state]);
 
   const updateDraft = useCallback(
     (nextDraft: string) => {
-      if (saveInFlightRef.current) {
+      if (interpretCommandInFlightRef.current || saveInFlightRef.current) {
         return;
       }
 
@@ -172,7 +186,7 @@ export default function AiScreen() {
   );
 
   const startNewEntry = useCallback(() => {
-    if (saveInFlightRef.current) {
+    if (interpretCommandInFlightRef.current || saveInFlightRef.current) {
       return;
     }
 
@@ -249,6 +263,10 @@ export default function AiScreen() {
       const mealRecord = createLocalMealRecord(currentMealItems);
       await addMeal(mealRecord);
 
+      if (!mountedRef.current) {
+        return;
+      }
+
       invalidatedReviewItemsRef.current.add(state.items);
       reset();
       setDraft('');
@@ -258,7 +276,9 @@ export default function AiScreen() {
       setSaveStatus('success');
       Keyboard.dismiss();
     } catch {
-      setSaveStatus('error');
+      if (mountedRef.current) {
+        setSaveStatus('error');
+      }
     } finally {
       saveInFlightRef.current = false;
     }
@@ -359,29 +379,21 @@ export default function AiScreen() {
           <View accessibilityLiveRegion="polite" style={[styles.stateCard, styles.errorCard]}>
             <Text style={styles.errorTitle}>Öğün yorumlanamadı</Text>
             <Text style={styles.stateText}>
-              Öğün şu anda yorumlanamadı. Lütfen tekrar deneyin.
+              {interpretErrorPresentation?.message ?? 'Bu işlem şu anda tamamlanamıyor.'}
             </Text>
             <View style={styles.actionRow}>
-              <Pressable
-                accessibilityRole="button"
-                accessibilityState={{ disabled: !canRetry }}
-                disabled={!canRetry}
-                onPress={() => void retryInterpretation()}
-                style={({ pressed }) => [
-                  styles.retryButton,
-                  !canRetry && styles.secondaryButtonDisabled,
-                  pressed && canRetry && styles.buttonPressed,
-                ]}
-              >
-                <Text
-                  style={[
-                    styles.retryButtonText,
-                    !canRetry && styles.secondaryButtonTextDisabled,
+              {canRetry ? (
+                <Pressable
+                  accessibilityRole="button"
+                  onPress={() => void retryInterpretation()}
+                  style={({ pressed }) => [
+                    styles.retryButton,
+                    pressed && styles.buttonPressed,
                   ]}
                 >
-                  Tekrar Dene
-                </Text>
-              </Pressable>
+                  <Text style={styles.retryButtonText}>Tekrar Dene</Text>
+                </Pressable>
+              ) : null}
               <Pressable
                 accessibilityRole="button"
                 onPress={startNewEntry}

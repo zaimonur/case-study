@@ -21,6 +21,8 @@ const (
 	defaultDatabasePingTimeout = 2 * time.Second
 	defaultGroqModel           = "openai/gpt-oss-120b"
 	defaultGroqTimeout         = 10 * time.Second
+	defaultGeminiModel         = "gemini-2.5-flash"
+	defaultGeminiTimeout       = 15 * time.Second
 )
 
 // Config contains all runtime configuration needed by the API process.
@@ -30,6 +32,7 @@ type Config struct {
 	HTTP           HTTP
 	Database       Database
 	Groq           Groq
+	Gemini         Gemini
 }
 
 // HTTP contains HTTP server lifecycle settings.
@@ -57,6 +60,14 @@ type Database struct {
 // Groq contains optional text-extraction provider configuration. APIKey may be
 // empty so deployments that do not use AI extraction can still start.
 type Groq struct {
+	APIKey  string
+	Model   string
+	Timeout time.Duration
+}
+
+// Gemini contains optional image-extraction provider configuration. APIKey may
+// be empty so deployments that do not use image extraction can still start.
+type Gemini struct {
 	APIKey  string
 	Model   string
 	Timeout time.Duration
@@ -132,6 +143,16 @@ func load(lookup lookupEnv) (Config, error) {
 		return Config{}, err
 	}
 
+	geminiAPIKey := stringValue(lookup, "GEMINI_API_KEY", "")
+	geminiModel := strings.TrimSpace(stringValue(lookup, "GEMINI_MODEL", defaultGeminiModel))
+	if geminiModel == "" {
+		return Config{}, fmt.Errorf("GEMINI_MODEL must not be empty")
+	}
+	geminiTimeout, err := durationValue(lookup, "GEMINI_TIMEOUT", defaultGeminiTimeout)
+	if err != nil {
+		return Config{}, err
+	}
+
 	return Config{
 		AppEnvironment: appEnvironment,
 		LogLevel:       logLevel,
@@ -152,6 +173,11 @@ func load(lookup lookupEnv) (Config, error) {
 			APIKey:  groqAPIKey,
 			Model:   groqModel,
 			Timeout: groqTimeout,
+		},
+		Gemini: Gemini{
+			APIKey:  geminiAPIKey,
+			Model:   geminiModel,
+			Timeout: geminiTimeout,
 		},
 	}, nil
 }

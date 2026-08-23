@@ -30,6 +30,10 @@ type stubMealTextInterpreter struct {
 	resolveResult  mealai.ResolveSelectionResult
 	resolveErr     error
 	resolveCalls   int
+	imageRequest   mealai.ImageRequest
+	imageResult    mealai.ImageResult
+	imageErr       error
+	imageCalls     int
 	panicValue     any
 }
 
@@ -162,7 +166,7 @@ func TestMealInterpretMapsApplicationErrorsWithoutLeaks(t *testing.T) {
 func TestMealInterpretWithoutConfiguredExtractorReturnsAIUnavailable(t *testing.T) {
 	t.Parallel()
 
-	service := mealai.NewService(foodextraction.NewService(nil), nil, nil, nil, nil)
+	service := mealai.NewService(foodextraction.NewService(nil), nil, nil, nil, nil, nil)
 	response := performRequestWithBody(mealRouter(service), http.MethodPost, "/ai/meals/interpret", `{"text":"elma","locale":"tr"}`)
 	if response.Code != http.StatusServiceUnavailable || response.Body.String() != "{\"status\":\"ai_unavailable\"}\n" {
 		t.Fatalf("response = %d %q", response.Code, response.Body.String())
@@ -411,8 +415,9 @@ func TestMealResolveWorksWithoutConfiguredGroqExtractor(t *testing.T) {
 	}}
 	calculator := &stubNutritionCalculator{result: nutritioncalc.Result{FoodID: 7, ResolvedGrams: 50}}
 	service := mealai.NewService(
-		foodextraction.NewService(nil), nil, &deterministicMealAmountResolver{}, detailer, calculator,
-	)
+		foodextraction.NewService(nil), nil,
+		nil, &deterministicMealAmountResolver{}, detailer, calculator)
+
 	body := `{"food_id":7,"locale":"tr","intent":{"query":"elma","quantity":null,"unit_hint":null},"choice":{"kind":"grams","grams":50,"portion_id":null,"quantity":null}}`
 	response := performRequestWithBody(mealRouter(service), http.MethodPost, "/ai/meals/resolve", body)
 	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"resolved_grams":50`) {

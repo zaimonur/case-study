@@ -14,16 +14,21 @@ import {
 
 import type { MealItem } from '../../src/domain/meal';
 import type {
+  ClarificationRequiredImageMealAiItem,
   ClarificationRequiredMealAiItem,
+  FoodIdentityClarificationImageMealAiItem,
   FoodIdentityClarificationMealAiItem,
+  ReadyImageMealAiItem,
   ReadyMealAiItem,
 } from '../../src/domain/mealAi';
+import type { PreparedMealImage } from '../../src/domain/mealImage';
 import { createLocalMealRecord } from '../../src/domain/mealRecord';
 import {
   AmountClarificationCard,
   type AmountResolveChoice,
 } from '../../src/features/mealAi/AmountClarificationCard';
 import { FoodIdentityClarificationCard } from '../../src/features/mealAi/FoodIdentityClarificationCard';
+import { MealImageInputCard } from '../../src/features/mealAi/MealImageInputCard';
 import {
   mapReadyMealAiItemToMealItem,
 } from '../../src/features/mealAi/mapReadyMealAiItemToMealItem';
@@ -35,19 +40,29 @@ import type {
   MealAiSessionState,
 } from '../../src/features/mealAi/mealAiSession';
 import { useMealAiSession } from '../../src/features/mealAi/useMealAiSession';
+import { useMealImageInput } from '../../src/features/mealAi/useMealImageInput';
 import { useMeals } from '../../src/state/MealStoreProvider';
 
 const MEAL_AI_LOCALE = 'tr-TR';
 
 type SaveStatus = 'idle' | 'saving' | 'error' | 'success';
+type MealAiInputMode = 'text' | 'image';
+
+type ClarificationRequiredSessionItem =
+  | ClarificationRequiredMealAiItem
+  | ClarificationRequiredImageMealAiItem;
 
 function isFoodIdentityClarificationItem(
-  item: ClarificationRequiredMealAiItem,
-): item is FoodIdentityClarificationMealAiItem {
+  item: ClarificationRequiredSessionItem,
+): item is FoodIdentityClarificationMealAiItem | FoodIdentityClarificationImageMealAiItem {
   return item.clarification.kind === 'food_identity';
 }
 
-function ReadyMealAiItemCard({ item }: { item: ReadyMealAiItem }) {
+function ReadyMealAiItemCard({
+  item,
+}: {
+  item: ReadyMealAiItem | ReadyImageMealAiItem;
+}) {
   return (
     <View style={[styles.itemCard, styles.readyItemCard]}>
       <Text style={styles.readyLabel}>Hazır</Text>
@@ -75,11 +90,14 @@ function mapFullyReadySessionToMealItems(state: MealAiSessionState): MealItem[] 
 }
 
 export default function AiScreen() {
-  const { state, interpret, reset, resolveItem } = useMealAiSession();
+  const { state, interpretText, interpretImage, reset, resolveItem } = useMealAiSession();
+  const imageInput = useMealImageInput();
   const { addMeal, hydrationStatus } = useMeals();
+  const [inputMode, setInputMode] = useState<MealAiInputMode>('text');
   const [draft, setDraft] = useState('');
   const [saveStatus, setSaveStatus] = useState<SaveStatus>('idle');
   const lastSubmittedTextRef = useRef<string | null>(null);
+  const lastSubmittedImageRef = useRef<PreparedMealImage | null>(null);
   const completedSessionInvalidatedRef = useRef(false);
   const interpretCommandInFlightRef = useRef(false);
   const saveInFlightRef = useRef(false);
@@ -88,15 +106,36 @@ export default function AiScreen() {
 
   const isInterpreting = state.status === 'interpreting';
   const saveIsRunning = saveStatus === 'saving';
-  const canSubmit = state.status === 'idle' && draft.trim().length > 0 && !saveIsRunning;
+  const imageInputIsBusy = imageInput.operation !== 'idle';
+  const canSwitchMode =
+    state.status === 'idle' &&
+    !imageInputIsBusy &&
+    !interpretCommandInFlightRef.current &&
+    !saveIsRunning;
+  const canSubmitText =
+    inputMode === 'text' &&
+    state.status === 'idle' &&
+    draft.trim().length > 0 &&
+    !imageInputIsBusy &&
+    !saveIsRunning;
+  const canManageImageInput =
+    inputMode === 'image' &&
+    state.status === 'idle' &&
+    !interpretCommandInFlightRef.current &&
+    !saveIsRunning;
+  const canInterpretImage =
+    canManageImageInput && imageInput.image !== null && !imageInputIsBusy;
   const retryText = lastSubmittedTextRef.current;
+  const retryImage = lastSubmittedImageRef.current;
   const interpretErrorPresentation =
     state.status === 'error' ? getMealAiErrorPresentation(state.error) : null;
   const canRetry =
     state.status === 'error' &&
     interpretErrorPresentation?.retryable === true &&
-    retryText !== null &&
-    retryText.trim().length > 0 &&
+    ((state.source === 'text' && retryText !== null && retryText.trim().length > 0) ||
+      (state.source === 'image' &&
+        retryImage !== null &&
+        imageInput.image === retryImage)) &&
     !saveIsRunning;
   const readyMealItems = useMemo(() => mapFullyReadySessionToMealItems(state), [state]);
 
@@ -108,7 +147,7 @@ export default function AiScreen() {
     };
   }, []);
 
-  const runInterpret = useCallback(
+  const runTextInterpret = useCallback(
     async (submittedText: string) => {
       if (interpretCommandInFlightRef.current) {
         return;
@@ -116,34 +155,77 @@ export default function AiScreen() {
 
       interpretCommandInFlightRef.current = true;
       try {
-        await interpret(submittedText, MEAL_AI_LOCALE);
+        await interpretText(submittedText, MEAL_AI_LOCALE);
       } finally {
         interpretCommandInFlightRef.current = false;
       }
     },
-    [interpret],
+    [interpretText],
+  );
+
+  const runImageInterpret = useCallback(
+    async (submittedImage: PreparedMealImage) => {
+      if (
+        interpretCommandInFlightRef.current ||
+        !imageInput.protectImageForUpload(submittedImage)
+      ) {
+        return;
+      }
+
+      interpretCommandInFlightRef.current = true;
+      try {
+        await interpretImage(submittedImage, MEAL_AI_LOCALE);
+      } finally {
+        imageInput.unprotectImageAfterUpload(submittedImage);
+        interpretCommandInFlightRef.current = false;
+      }
+    },
+    [
+      imageInput.protectImageForUpload,
+      imageInput.unprotectImageAfterUpload,
+      interpretImage,
+    ],
   );
 
   const submitDraft = useCallback(async () => {
-    if (!canSubmit || interpretCommandInFlightRef.current || saveInFlightRef.current) {
+    if (!canSubmitText || interpretCommandInFlightRef.current || saveInFlightRef.current) {
       return;
     }
 
     const submittedText = draft;
     lastSubmittedTextRef.current = submittedText;
+    lastSubmittedImageRef.current = null;
     completedSessionInvalidatedRef.current = false;
     setSaveStatus('idle');
     Keyboard.dismiss();
-    await runInterpret(submittedText);
-  }, [canSubmit, draft, runInterpret]);
+    await runTextInterpret(submittedText);
+  }, [canSubmitText, draft, runTextInterpret]);
+
+  const submitImage = useCallback(async () => {
+    const submittedImage = imageInput.image;
+    if (
+      !canInterpretImage ||
+      submittedImage === null ||
+      interpretCommandInFlightRef.current ||
+      saveInFlightRef.current
+    ) {
+      return;
+    }
+
+    lastSubmittedImageRef.current = submittedImage;
+    lastSubmittedTextRef.current = null;
+    completedSessionInvalidatedRef.current = false;
+    setSaveStatus('idle');
+    Keyboard.dismiss();
+    await runImageInterpret(submittedImage);
+  }, [canInterpretImage, imageInput.image, runImageInterpret]);
 
   const retryInterpretation = useCallback(async () => {
     const submittedText = lastSubmittedTextRef.current;
+    const submittedImage = lastSubmittedImageRef.current;
     if (
       state.status !== 'error' ||
       !getMealAiErrorPresentation(state.error).retryable ||
-      submittedText === null ||
-      submittedText.trim().length === 0 ||
       interpretCommandInFlightRef.current ||
       saveInFlightRef.current
     ) {
@@ -153,8 +235,44 @@ export default function AiScreen() {
     completedSessionInvalidatedRef.current = false;
     setSaveStatus('idle');
     Keyboard.dismiss();
-    await runInterpret(submittedText);
-  }, [runInterpret, state]);
+    if (state.source === 'text') {
+      if (submittedText === null || submittedText.trim().length === 0) {
+        return;
+      }
+      await runTextInterpret(submittedText);
+      return;
+    }
+
+    if (submittedImage !== null && imageInput.image === submittedImage) {
+      await runImageInterpret(submittedImage);
+    }
+  }, [imageInput.image, runImageInterpret, runTextInterpret, state]);
+
+  const switchInputMode = useCallback(
+    (nextMode: MealAiInputMode) => {
+      if (
+        !canSwitchMode ||
+        nextMode === inputMode ||
+        interpretCommandInFlightRef.current ||
+        saveInFlightRef.current ||
+        imageInput.operation !== 'idle'
+      ) {
+        return;
+      }
+
+      if (inputMode === 'image') {
+        if (!imageInput.clearImage()) {
+          return;
+        }
+        lastSubmittedImageRef.current = null;
+      }
+
+      setSaveStatus('idle');
+      setInputMode(nextMode);
+      Keyboard.dismiss();
+    },
+    [canSwitchMode, imageInput.clearImage, imageInput.operation, inputMode],
+  );
 
   const updateDraft = useCallback(
     (nextDraft: string) => {
@@ -195,13 +313,15 @@ export default function AiScreen() {
     }
 
     reset();
+    imageInput.clearImage();
     setDraft('');
     setSaveStatus('idle');
     lastSubmittedTextRef.current = null;
+    lastSubmittedImageRef.current = null;
     completedSessionInvalidatedRef.current = false;
     interpretCommandInFlightRef.current = false;
     Keyboard.dismiss();
-  }, [reset, state]);
+  }, [imageInput.clearImage, reset, state]);
 
   const selectFoodCandidate = useCallback(
     async (itemIndex: number, foodId: number) => {
@@ -269,8 +389,10 @@ export default function AiScreen() {
 
       invalidatedReviewItemsRef.current.add(state.items);
       reset();
+      imageInput.clearImage();
       setDraft('');
       lastSubmittedTextRef.current = null;
+      lastSubmittedImageRef.current = null;
       completedSessionInvalidatedRef.current = false;
       interpretCommandInFlightRef.current = false;
       setSaveStatus('success');
@@ -282,7 +404,7 @@ export default function AiScreen() {
     } finally {
       saveInFlightRef.current = false;
     }
-  }, [addMeal, hydrationStatus, reset, state]);
+  }, [addMeal, hydrationStatus, imageInput.clearImage, reset, state]);
 
   return (
     <KeyboardAvoidingView
@@ -297,49 +419,110 @@ export default function AiScreen() {
         <View style={styles.header}>
           <Text style={styles.eyebrow}>Akıllı öğün girişi</Text>
           <Text style={styles.title}>AI ile Öğün Ekle</Text>
-          <Text style={styles.description}>Ne yediğini doğal şekilde yaz.</Text>
+          <Text style={styles.description}>
+            Öğününü yazıyla anlat veya yiyeceklerin olduğu bir fotoğraf seç.
+          </Text>
         </View>
 
-        <View style={styles.entryCard}>
-          <Text style={styles.inputLabel}>Öğün açıklaması</Text>
-          <TextInput
-            accessibilityLabel="Öğün açıklaması"
-            autoCapitalize="sentences"
-            autoCorrect
-            editable={!isInterpreting && !saveIsRunning}
-            multiline
-            onChangeText={updateDraft}
-            placeholder="Örn. 2 yumurta ve 200 g tavuk yedim."
-            placeholderTextColor="#87928e"
-            style={[
-              styles.input,
-              (isInterpreting || saveIsRunning) && styles.inputDisabled,
-            ]}
-            textAlignVertical="top"
-            value={draft}
-          />
-
+        <View style={styles.modeSelector}>
           <Pressable
             accessibilityRole="button"
-            accessibilityState={{ disabled: !canSubmit }}
-            disabled={!canSubmit}
-            onPress={() => void submitDraft()}
+            accessibilityState={{ disabled: !canSwitchMode, selected: inputMode === 'text' }}
+            disabled={!canSwitchMode}
+            onPress={() => switchInputMode('text')}
             style={({ pressed }) => [
-              styles.primaryButton,
-              !canSubmit && styles.primaryButtonDisabled,
-              pressed && canSubmit && styles.buttonPressed,
+              styles.modeButton,
+              inputMode === 'text' && styles.modeButtonActive,
+              !canSwitchMode && inputMode !== 'text' && styles.modeButtonDisabled,
+              pressed && canSwitchMode && styles.buttonPressed,
             ]}
           >
             <Text
               style={[
-                styles.primaryButtonText,
-                !canSubmit && styles.primaryButtonTextDisabled,
+                styles.modeButtonText,
+                inputMode === 'text' && styles.modeButtonTextActive,
               ]}
             >
-              Yorumla
+              Yazıyla
+            </Text>
+          </Pressable>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityState={{ disabled: !canSwitchMode, selected: inputMode === 'image' }}
+            disabled={!canSwitchMode}
+            onPress={() => switchInputMode('image')}
+            style={({ pressed }) => [
+              styles.modeButton,
+              inputMode === 'image' && styles.modeButtonActive,
+              !canSwitchMode && inputMode !== 'image' && styles.modeButtonDisabled,
+              pressed && canSwitchMode && styles.buttonPressed,
+            ]}
+          >
+            <Text
+              style={[
+                styles.modeButtonText,
+                inputMode === 'image' && styles.modeButtonTextActive,
+              ]}
+            >
+              Fotoğrafla
             </Text>
           </Pressable>
         </View>
+
+        {inputMode === 'text' ? (
+          <View style={styles.entryCard}>
+            <Text style={styles.inputLabel}>Öğün açıklaması</Text>
+            <TextInput
+              accessibilityLabel="Öğün açıklaması"
+              autoCapitalize="sentences"
+              autoCorrect
+              editable={!isInterpreting && !saveIsRunning}
+              multiline
+              onChangeText={updateDraft}
+              placeholder="Örn. 2 yumurta ve 200 g tavuk yedim."
+              placeholderTextColor="#87928e"
+              style={[
+                styles.input,
+                (isInterpreting || saveIsRunning) && styles.inputDisabled,
+              ]}
+              textAlignVertical="top"
+              value={draft}
+            />
+
+            <Pressable
+              accessibilityRole="button"
+              accessibilityState={{ disabled: !canSubmitText }}
+              disabled={!canSubmitText}
+              onPress={() => void submitDraft()}
+              style={({ pressed }) => [
+                styles.primaryButton,
+                !canSubmitText && styles.primaryButtonDisabled,
+                pressed && canSubmitText && styles.buttonPressed,
+              ]}
+            >
+              <Text
+                style={[
+                  styles.primaryButtonText,
+                  !canSubmitText && styles.primaryButtonTextDisabled,
+                ]}
+              >
+                Yorumla
+              </Text>
+            </Pressable>
+          </View>
+        ) : (
+          <MealImageInputCard
+            canInterpret={canInterpretImage}
+            canManageInput={canManageImageInput}
+            error={imageInput.error}
+            image={imageInput.image}
+            onInterpret={submitImage}
+            onRemove={imageInput.removeImage}
+            onSelectFromGallery={imageInput.selectFromGallery}
+            onTakePhoto={imageInput.takePhoto}
+            operation={imageInput.operation}
+          />
+        )}
 
         {saveStatus === 'success' ? (
           <View accessibilityLiveRegion="polite" style={[styles.stateCard, styles.successCard]}>
@@ -352,8 +535,16 @@ export default function AiScreen() {
             <View style={styles.loadingRow}>
               <ActivityIndicator color="#28785f" />
               <View style={styles.loadingCopy}>
-                <Text style={styles.stateTitle}>Öğünün yorumlanıyor…</Text>
-                <Text style={styles.stateText}>Yiyecekleri ve miktarları anlamaya çalışıyorum.</Text>
+                <Text style={styles.stateTitle}>
+                  {state.source === 'image'
+                    ? 'Fotoğraftaki yiyecekler inceleniyor…'
+                    : 'Öğünün yorumlanıyor…'}
+                </Text>
+                <Text style={styles.stateText}>
+                  {state.source === 'image'
+                    ? 'Fotoğraftaki yiyecekleri tanımaya çalışıyorum.'
+                    : 'Yiyecekleri ve miktarları anlamaya çalışıyorum.'}
+                </Text>
               </View>
             </View>
           </View>
@@ -361,9 +552,13 @@ export default function AiScreen() {
 
         {state.status === 'empty' ? (
           <View accessibilityLiveRegion="polite" style={styles.stateCard}>
-            <Text style={styles.stateTitle}>Yiyecek bulunamadı</Text>
+            <Text style={styles.stateTitle}>
+              {state.source === 'image' ? 'Fotoğrafta yiyecek bulunamadı' : 'Yiyecek bulunamadı'}
+            </Text>
             <Text style={styles.stateText}>
-              Bu açıklamadan bir yiyecek çıkaramadım. Biraz daha ayrıntılı yazmayı deneyebilirsin.
+              {state.source === 'image'
+                ? 'Fotoğrafta güvenilir bir yiyecek bulunamadı. Başka bir fotoğraf deneyebilirsin.'
+                : 'Bu açıklamadan bir yiyecek çıkaramadım. Biraz daha ayrıntılı yazmayı deneyebilirsin.'}
             </Text>
             <Pressable
               accessibilityRole="button"
@@ -377,7 +572,9 @@ export default function AiScreen() {
 
         {state.status === 'error' ? (
           <View accessibilityLiveRegion="polite" style={[styles.stateCard, styles.errorCard]}>
-            <Text style={styles.errorTitle}>Öğün yorumlanamadı</Text>
+            <Text style={styles.errorTitle}>
+              {state.source === 'image' ? 'Fotoğraf yorumlanamadı' : 'Öğün yorumlanamadı'}
+            </Text>
             <Text style={styles.stateText}>
               {interpretErrorPresentation?.message ?? 'Bu işlem şu anda tamamlanamıyor.'}
             </Text>
@@ -492,6 +689,25 @@ const styles = StyleSheet.create({
   },
   title: { color: '#1d2b26', fontSize: 30, fontWeight: '700' },
   description: { color: '#64716c', fontSize: 16, lineHeight: 24 },
+  modeSelector: {
+    flexDirection: 'row',
+    gap: 8,
+    borderRadius: 14,
+    padding: 4,
+    backgroundColor: '#eaf1ed',
+  },
+  modeButton: {
+    minHeight: 44,
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 11,
+    paddingHorizontal: 12,
+  },
+  modeButtonActive: { backgroundColor: '#ffffff' },
+  modeButtonDisabled: { opacity: 0.5 },
+  modeButtonText: { color: '#64716c', fontSize: 15, fontWeight: '700' },
+  modeButtonTextActive: { color: '#1f664f' },
   entryCard: {
     gap: 14,
     borderWidth: 1,

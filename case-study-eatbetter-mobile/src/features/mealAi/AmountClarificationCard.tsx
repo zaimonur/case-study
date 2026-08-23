@@ -1,7 +1,10 @@
 import { useMemo, useState } from 'react';
 import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
 
-import type { AmountClarificationMealAiItem } from '../../domain/mealAi';
+import type {
+  AmountClarificationImageMealAiItem,
+  AmountClarificationMealAiItem,
+} from '../../domain/mealAi';
 import {
   PortionSelector,
   type PortionSelection,
@@ -15,7 +18,7 @@ export type AmountResolveChoice = Exclude<
 >;
 
 type AmountClarificationCardProps = {
-  item: AmountClarificationMealAiItem;
+  item: AmountClarificationMealAiItem | AmountClarificationImageMealAiItem;
   itemIndex: number;
   onConfirm: (itemIndex: number, choice: AmountResolveChoice) => Promise<void>;
   resolve: MealAiResolveRuntime;
@@ -32,7 +35,7 @@ function parsePositiveNumberInput(value: string): number | null {
 }
 
 function buildAmountResolveChoice(
-  item: AmountClarificationMealAiItem,
+  item: AmountClarificationMealAiItem | AmountClarificationImageMealAiItem,
   selection: PortionSelection,
 ): AmountResolveChoice | null {
   if (selection.kind === 'grams') {

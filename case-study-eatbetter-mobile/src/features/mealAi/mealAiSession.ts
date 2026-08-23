@@ -1,9 +1,15 @@
 import type {
+  ImageMealAiIntent,
+  ImageMealAiItem,
   MealAiIntent,
   MealAiItem,
   MealAiResolveChoice,
   MealAiResolveResult,
 } from '../../domain/mealAi';
+
+export type MealAiSessionSource = 'text' | 'image';
+
+export type MealAiSessionDomainItem = MealAiItem | ImageMealAiItem;
 
 export type MealAiResolveRuntime =
   | {
@@ -19,14 +25,25 @@ export type MealAiResolveRuntime =
       error: Error;
     };
 
-export type MealAiSessionItem = {
+export type TextMealAiSessionItem = {
+  source: 'text';
   item: MealAiItem;
   originalIntent: Readonly<MealAiIntent>;
   resolve: MealAiResolveRuntime;
 };
 
+export type ImageMealAiSessionItem = {
+  source: 'image';
+  item: ImageMealAiItem;
+  originalIntent: Readonly<ImageMealAiIntent>;
+  resolve: MealAiResolveRuntime;
+};
+
+export type MealAiSessionItem = TextMealAiSessionItem | ImageMealAiSessionItem;
+
 export type IdleMealAiSessionState = {
   status: 'idle';
+  source: null;
   locale: null;
   items: [];
   error: null;
@@ -34,6 +51,7 @@ export type IdleMealAiSessionState = {
 
 export type InterpretingMealAiSessionState = {
   status: 'interpreting';
+  source: MealAiSessionSource;
   locale: null;
   items: [];
   error: null;
@@ -41,6 +59,7 @@ export type InterpretingMealAiSessionState = {
 
 export type EmptyMealAiSessionState = {
   status: 'empty';
+  source: MealAiSessionSource;
   locale: string;
   items: [];
   error: null;
@@ -48,6 +67,7 @@ export type EmptyMealAiSessionState = {
 
 export type ActiveMealAiSessionState = {
   status: 'active';
+  source: MealAiSessionSource;
   locale: string;
   items: MealAiSessionItem[];
   error: null;
@@ -55,6 +75,7 @@ export type ActiveMealAiSessionState = {
 
 export type ErrorMealAiSessionState = {
   status: 'error';
+  source: MealAiSessionSource;
   locale: null;
   items: [];
   error: Error;
@@ -91,12 +112,17 @@ export type PreparedMealAiResolveCommand = {
 };
 
 export type MealAiSessionAction =
-  | { type: 'INTERPRET_STARTED' }
-  | { type: 'INTERPRET_EMPTY'; locale: string }
-  | { type: 'INTERPRET_SUCCEEDED'; locale: string; items: MealAiItem[] }
-  | { type: 'INTERPRET_FAILED'; error: Error }
+  | { type: 'INTERPRET_STARTED'; source: MealAiSessionSource }
+  | { type: 'INTERPRET_EMPTY'; source: MealAiSessionSource; locale: string }
+  | {
+      type: 'INTERPRET_SUCCEEDED';
+      source: MealAiSessionSource;
+      locale: string;
+      items: MealAiSessionDomainItem[];
+    }
+  | { type: 'INTERPRET_FAILED'; source: MealAiSessionSource; error: Error }
   | { type: 'RESOLVE_STARTED'; itemIndex: number }
-  | { type: 'RESOLVE_SUCCEEDED'; itemIndex: number; item: MealAiItem }
+  | { type: 'RESOLVE_SUCCEEDED'; itemIndex: number; item: MealAiSessionDomainItem }
   | { type: 'RESOLVE_FAILED'; itemIndex: number; error: Error }
   | { type: 'RESET' };
 
@@ -107,6 +133,7 @@ const idleResolveRuntime: MealAiResolveRuntime = Object.freeze({
 
 export const initialMealAiSessionState: MealAiSessionState = {
   status: 'idle',
+  source: null,
   locale: null,
   items: [],
   error: null,
@@ -133,28 +160,62 @@ function isPositiveFiniteNumber(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value) && value > 0;
 }
 
-function preserveOriginalIntent(
-  item: MealAiItem,
-  originalIntent: Readonly<MealAiIntent>,
-): MealAiItem {
-  return {
-    ...item,
-    intent: originalIntent,
-  };
+function createSessionItem(
+  source: MealAiSessionSource,
+  item: MealAiSessionDomainItem,
+): MealAiSessionItem {
+  if (source === 'text' && 'mention' in item) {
+    const originalIntent: Readonly<MealAiIntent> = Object.freeze({
+      query: item.intent.query,
+      quantity: item.intent.quantity,
+      unitHint: item.intent.unitHint,
+    });
+    return {
+      source,
+      item: { ...item, intent: originalIntent },
+      originalIntent,
+      resolve: idleResolveRuntime,
+    };
+  }
+
+  if (source === 'image' && 'observation' in item) {
+    const originalIntent: Readonly<ImageMealAiIntent> = Object.freeze({
+      query: item.intent.query,
+      quantity: null,
+      unitHint: null,
+    });
+    return {
+      source,
+      item: { ...item, intent: originalIntent },
+      originalIntent,
+      resolve: idleResolveRuntime,
+    };
+  }
+
+  throw new Error('The MealAI session source does not match its evidence.');
 }
 
-function createSessionItem(item: MealAiItem): MealAiSessionItem {
-  const originalIntent = Object.freeze({
-    query: item.intent.query,
-    quantity: item.intent.quantity,
-    unitHint: item.intent.unitHint,
-  });
+function preserveSessionItemIntent(
+  sessionItem: MealAiSessionItem,
+  item: MealAiSessionDomainItem,
+): MealAiSessionItem {
+  if (sessionItem.source === 'text' && 'mention' in item) {
+    return {
+      ...sessionItem,
+      item: { ...item, intent: sessionItem.originalIntent },
+      resolve: idleResolveRuntime,
+    };
+  }
 
-  return {
-    item: preserveOriginalIntent(item, originalIntent),
-    originalIntent,
-    resolve: idleResolveRuntime,
-  };
+  if (sessionItem.source === 'image' && 'observation' in item) {
+    return {
+      ...sessionItem,
+      item: { ...item, intent: sessionItem.originalIntent },
+      resolve: idleResolveRuntime,
+    };
+  }
+
+  return sessionItem;
 }
 
 function updateActiveSessionItem(
@@ -187,6 +248,7 @@ export function mealAiSessionReducer(
     case 'INTERPRET_STARTED':
       return {
         status: 'interpreting',
+        source: action.source,
         locale: null,
         items: [],
         error: null,
@@ -194,6 +256,7 @@ export function mealAiSessionReducer(
     case 'INTERPRET_EMPTY':
       return {
         status: 'empty',
+        source: action.source,
         locale: action.locale,
         items: [],
         error: null,
@@ -201,13 +264,15 @@ export function mealAiSessionReducer(
     case 'INTERPRET_SUCCEEDED':
       return {
         status: 'active',
+        source: action.source,
         locale: action.locale,
-        items: action.items.map(createSessionItem),
+        items: action.items.map((item) => createSessionItem(action.source, item)),
         error: null,
       };
     case 'INTERPRET_FAILED':
       return {
         status: 'error',
+        source: action.source,
         locale: null,
         items: [],
         error: action.error,
@@ -221,11 +286,9 @@ export function mealAiSessionReducer(
         },
       }));
     case 'RESOLVE_SUCCEEDED':
-      return updateActiveSessionItem(state, action.itemIndex, (sessionItem) => ({
-        ...sessionItem,
-        item: preserveOriginalIntent(action.item, sessionItem.originalIntent),
-        resolve: idleResolveRuntime,
-      }));
+      return updateActiveSessionItem(state, action.itemIndex, (sessionItem) =>
+        preserveSessionItemIntent(sessionItem, action.item),
+      );
     case 'RESOLVE_FAILED':
       return updateActiveSessionItem(state, action.itemIndex, (sessionItem) => ({
         ...sessionItem,
@@ -242,6 +305,12 @@ export function mealAiSessionReducer(
 export function validateMealAiInterpretCommand(text: unknown, locale: unknown): void {
   if (!isNonBlankString(text) || !isNonBlankString(locale)) {
     throw new Error('Meal interpretation text and locale must not be blank.');
+  }
+}
+
+export function validateMealAiImageInterpretCommand(image: unknown, locale: unknown): void {
+  if (!isRecord(image) || !isNonBlankString(locale)) {
+    throw new Error('Meal image interpretation input and locale are invalid.');
   }
 }
 
@@ -372,7 +441,7 @@ export function reconstructResolvedMealAiItem(
   sessionItem: MealAiSessionItem,
   choice: MealAiResolveChoice,
   result: MealAiResolveResult,
-): MealAiItem {
+): MealAiSessionDomainItem {
   if (!mealAiIntentsAreExactlyEqual(sessionItem.originalIntent, result.intent)) {
     throw new Error('The meal continuation changed the original intent.');
   }
@@ -400,13 +469,33 @@ export function reconstructResolvedMealAiItem(
     throw new Error('The meal continuation changed the explicit portion choice.');
   }
 
-  const mention = sessionItem.item.mention;
-  const intent = sessionItem.originalIntent;
+  if (sessionItem.source === 'text') {
+    const mention = sessionItem.item.mention;
+    if (result.state === 'ready') {
+      return {
+        mention,
+        intent: sessionItem.originalIntent,
+        state: 'ready',
+        food: result.food,
+        selection: result.selection,
+        preview: result.preview,
+      };
+    }
 
-  if (result.state === 'ready') {
     return {
       mention,
-      intent,
+      intent: sessionItem.originalIntent,
+      state: 'clarification_required',
+      food: result.food,
+      clarification: result.clarification,
+    };
+  }
+
+  const observation = sessionItem.item.observation;
+  if (result.state === 'ready') {
+    return {
+      observation,
+      intent: sessionItem.originalIntent,
       state: 'ready',
       food: result.food,
       selection: result.selection,
@@ -415,8 +504,8 @@ export function reconstructResolvedMealAiItem(
   }
 
   return {
-    mention,
-    intent,
+    observation,
+    intent: sessionItem.originalIntent,
     state: 'clarification_required',
     food: result.food,
     clarification: result.clarification,

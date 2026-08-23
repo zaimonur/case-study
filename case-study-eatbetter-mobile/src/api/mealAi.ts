@@ -1,7 +1,14 @@
+import { File } from 'expo-file-system';
+
 import type {
   AmountClarificationMealAiItem,
+  AmountClarificationImageMealAiItem,
   ClarificationRequiredMealAiResolveResult,
   FoodIdentityClarificationMealAiItem,
+  FoodIdentityClarificationImageMealAiItem,
+  ImageMealAiItem,
+  ImageMealAiIntent,
+  ImageMealInterpretResult,
   MealAiAmountClarification,
   MealAiFoodCandidate,
   MealAiFoodIdentityClarification,
@@ -14,15 +21,31 @@ import type {
   MealAiResolveResult,
   MealAiSelection,
   MealInterpretResult,
+  ReadyImageMealAiItem,
   ReadyMealAiItem,
   ReadyMealAiResolveResult,
   ResolveMealSelectionInput,
 } from '../domain/mealAi';
+import {
+  MEAL_IMAGE_MAX_BYTES,
+  type PreparedMealImage,
+} from '../domain/mealImage';
 import type { NutritionValues } from '../domain/nutrition';
-import { ApiError, isAbortError, postJson, type ApiJsonResult } from './client';
+import {
+  ApiError,
+  isAbortError,
+  postFormData,
+  postJson,
+  type ApiJsonResult,
+} from './client';
 
 export type InterpretMealTextInput = {
   text: string;
+  locale: string;
+};
+
+export type InterpretMealImageInput = {
+  image: PreparedMealImage;
   locale: string;
 };
 
@@ -36,9 +59,8 @@ function createMealAiAbortError(): Error {
   return error;
 }
 
-async function postMealAiJson(
-  path: string,
-  body: unknown,
+async function executeMealAiRequest(
+  request: (signal: AbortSignal) => Promise<ApiJsonResult>,
   externalSignal?: AbortSignal,
 ): Promise<ApiJsonResult> {
   if (externalSignal?.aborted) {
@@ -67,10 +89,7 @@ async function postMealAiJson(
   }, MEAL_AI_REQUEST_TIMEOUT_MS);
 
   try {
-    return await postJson(path, {
-      body,
-      signal: internalController.signal,
-    });
+    return await request(internalController.signal);
   } catch (error) {
     if (abortOwnership.source === 'timeout') {
       throw new ApiError(
@@ -96,12 +115,47 @@ async function postMealAiJson(
   }
 }
 
+function postMealAiJson(
+  path: string,
+  body: unknown,
+  externalSignal?: AbortSignal,
+): Promise<ApiJsonResult> {
+  return executeMealAiRequest(
+    (signal) => postJson(path, { body, signal }),
+    externalSignal,
+  );
+}
+
+function postMealAiFormData(
+  path: string,
+  body: FormData,
+  externalSignal?: AbortSignal,
+): Promise<ApiJsonResult> {
+  return executeMealAiRequest(
+    (signal) => postFormData(path, { body, signal }),
+    externalSignal,
+  );
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function isNonBlankString(value: unknown): value is string {
   return typeof value === 'string' && value.trim().length > 0;
+}
+
+function isNormalizedCodePointString(
+  value: unknown,
+  minimumCodePoints: number,
+  maximumCodePoints: number,
+): value is string {
+  if (typeof value !== 'string' || value.trim() !== value) {
+    return false;
+  }
+
+  const codePointCount = Array.from(value).length;
+  return codePointCount >= minimumCodePoints && codePointCount <= maximumCodePoints;
 }
 
 function isPositiveSafeInteger(value: unknown): value is number {
@@ -135,6 +189,23 @@ function parseIntent(value: unknown): MealAiIntent | null {
     query: value.query,
     quantity: value.quantity,
     unitHint: value.unit_hint,
+  };
+}
+
+function parseImageIntent(value: unknown): ImageMealAiIntent | null {
+  if (
+    !isRecord(value) ||
+    !isNormalizedCodePointString(value.query, 2, 120) ||
+    value.quantity !== null ||
+    value.unit_hint !== null
+  ) {
+    return null;
+  }
+
+  return {
+    query: value.query,
+    quantity: null,
+    unitHint: null,
   };
 }
 
@@ -326,16 +397,22 @@ function parseAmountClarification(value: unknown): MealAiAmountClarification | n
   };
 }
 
-function parseReadyItem(value: Record<string, unknown>): ReadyMealAiItem | null {
-  if (
-    value.state !== 'ready' ||
-    !isNonBlankString(value.mention) ||
-    value.clarification !== null
-  ) {
+type ParsedReadyItemFields<TIntent extends MealAiIntent> =
+  Omit<ReadyMealAiItem, 'mention' | 'intent'> & { intent: TIntent };
+
+type ParsedClarificationItemFields<TIntent extends MealAiIntent> =
+  | (Omit<FoodIdentityClarificationMealAiItem, 'mention' | 'intent'> & { intent: TIntent })
+  | (Omit<AmountClarificationMealAiItem, 'mention' | 'intent'> & { intent: TIntent });
+
+function parseReadyItemFields<TIntent extends MealAiIntent>(
+  value: Record<string, unknown>,
+  intentParser: (value: unknown) => TIntent | null,
+): ParsedReadyItemFields<TIntent> | null {
+  if (value.state !== 'ready' || value.clarification !== null) {
     return null;
   }
 
-  const intent = parseIntent(value.intent);
+  const intent = intentParser(value.intent);
   const food = parseFood(value.food);
   const selection = parseSelection(value.selection);
   const preview = parseNutritionPreview(value.preview);
@@ -351,7 +428,6 @@ function parseReadyItem(value: Record<string, unknown>): ReadyMealAiItem | null 
   }
 
   return {
-    mention: value.mention,
     intent,
     state: 'ready',
     food,
@@ -360,12 +436,12 @@ function parseReadyItem(value: Record<string, unknown>): ReadyMealAiItem | null 
   };
 }
 
-function parseClarificationItem(
+function parseClarificationItemFields<TIntent extends MealAiIntent>(
   value: Record<string, unknown>,
-): FoodIdentityClarificationMealAiItem | AmountClarificationMealAiItem | null {
+  intentParser: (value: unknown) => TIntent | null,
+): ParsedClarificationItemFields<TIntent> | null {
   if (
     value.state !== 'clarification_required' ||
-    !isNonBlankString(value.mention) ||
     value.selection !== null ||
     value.preview !== null ||
     !isRecord(value.clarification)
@@ -373,7 +449,7 @@ function parseClarificationItem(
     return null;
   }
 
-  const intent = parseIntent(value.intent);
+  const intent = intentParser(value.intent);
   if (intent === null) {
     return null;
   }
@@ -389,7 +465,6 @@ function parseClarificationItem(
     }
 
     return {
-      mention: value.mention,
       intent,
       state: 'clarification_required',
       food: null,
@@ -405,7 +480,6 @@ function parseClarificationItem(
     }
 
     return {
-      mention: value.mention,
       intent,
       state: 'clarification_required',
       food,
@@ -414,6 +488,26 @@ function parseClarificationItem(
   }
 
   return null;
+}
+
+function parseReadyItem(value: Record<string, unknown>): ReadyMealAiItem | null {
+  if (!isNonBlankString(value.mention)) {
+    return null;
+  }
+
+  const fields = parseReadyItemFields(value, parseIntent);
+  return fields === null ? null : { mention: value.mention, ...fields };
+}
+
+function parseClarificationItem(
+  value: Record<string, unknown>,
+): FoodIdentityClarificationMealAiItem | AmountClarificationMealAiItem | null {
+  if (!isNonBlankString(value.mention)) {
+    return null;
+  }
+
+  const fields = parseClarificationItemFields(value, parseIntent);
+  return fields === null ? null : { mention: value.mention, ...fields };
 }
 
 function parseItem(value: unknown): MealAiItem | null {
@@ -427,6 +521,42 @@ function parseItem(value: unknown): MealAiItem | null {
 
   if (value.state === 'clarification_required') {
     return parseClarificationItem(value);
+  }
+
+  return null;
+}
+
+function parseReadyImageItem(value: Record<string, unknown>): ReadyImageMealAiItem | null {
+  if (!isNormalizedCodePointString(value.observation, 1, 160)) {
+    return null;
+  }
+
+  const fields = parseReadyItemFields(value, parseImageIntent);
+  return fields === null ? null : { observation: value.observation, ...fields };
+}
+
+function parseImageClarificationItem(
+  value: Record<string, unknown>,
+): FoodIdentityClarificationImageMealAiItem | AmountClarificationImageMealAiItem | null {
+  if (!isNormalizedCodePointString(value.observation, 1, 160)) {
+    return null;
+  }
+
+  const fields = parseClarificationItemFields(value, parseImageIntent);
+  return fields === null ? null : { observation: value.observation, ...fields };
+}
+
+function parseImageItem(value: unknown): ImageMealAiItem | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+
+  if (value.state === 'ready') {
+    return parseReadyImageItem(value);
+  }
+
+  if (value.state === 'clarification_required') {
+    return parseImageClarificationItem(value);
   }
 
   return null;
@@ -459,6 +589,45 @@ function parseInterpretResult(value: unknown): MealInterpretResult | null {
 
   if (value.state === 'clarification_required') {
     if (items.length === 0 || !items.some((item) => item.state === 'clarification_required')) {
+      return null;
+    }
+    return { state: 'clarification_required', items };
+  }
+
+  return null;
+}
+
+function parseImageInterpretResult(value: unknown): ImageMealInterpretResult | null {
+  if (!isRecord(value) || !Array.isArray(value.items)) {
+    return null;
+  }
+
+  if (value.state === 'empty') {
+    return value.items.length === 0 ? { state: 'empty', items: [] } : null;
+  }
+
+  if (value.items.length === 0 || value.items.length > 12) {
+    return null;
+  }
+
+  const items: ImageMealAiItem[] = [];
+  for (const itemValue of value.items) {
+    const item = parseImageItem(itemValue);
+    if (item === null) {
+      return null;
+    }
+    items.push(item);
+  }
+
+  if (value.state === 'ready') {
+    if (items.some((item) => item.state !== 'ready')) {
+      return null;
+    }
+    return { state: 'ready', items: items as ReadyImageMealAiItem[] };
+  }
+
+  if (value.state === 'clarification_required') {
+    if (!items.some((item) => item.state === 'clarification_required')) {
       return null;
     }
     return { state: 'clarification_required', items };
@@ -532,6 +701,55 @@ function validateIntentInput(intent: MealAiIntent): void {
   }
 }
 
+function createMealImageFormFile(image: PreparedMealImage): File {
+  if (
+    !isRecord(image) ||
+    !isNonBlankString(image.uri) ||
+    image.mimeType !== 'image/jpeg' ||
+    !isPositiveSafeInteger(image.sizeBytes) ||
+    image.sizeBytes > MEAL_IMAGE_MAX_BYTES ||
+    !isPositiveSafeInteger(image.width) ||
+    !isPositiveSafeInteger(image.height)
+  ) {
+    throw new ApiError('config', 'The prepared meal image is invalid.');
+  }
+
+  try {
+    if (new URL(image.uri).protocol !== 'file:') {
+      throw new ApiError('config', 'The prepared meal image is invalid.');
+    }
+
+    const file = new File(image.uri);
+    const info = file.info();
+    if (
+      !info.exists ||
+      info.size !== image.sizeBytes ||
+      file.type !== image.mimeType
+    ) {
+      throw new ApiError('config', 'The prepared meal image is unavailable.');
+    }
+
+    // Expo's native FormData reads File.name; setting one own property keeps
+    // the binary local-file-backed while controlling the multipart filename.
+    Object.defineProperty(file, 'name', {
+      configurable: true,
+      value: 'meal-image.jpg',
+    });
+    return file;
+  } catch (error) {
+    if (error instanceof ApiError) {
+      throw error;
+    }
+
+    throw new ApiError(
+      'config',
+      'The prepared meal image is unavailable.',
+      {},
+      { cause: error },
+    );
+  }
+}
+
 function serializeChoice(choice: MealAiResolveChoice): Record<string, unknown> {
   if (!isRecord(choice) || typeof choice.kind !== 'string') {
     throw new ApiError('config', 'The meal resolution choice is invalid.');
@@ -585,6 +803,36 @@ export async function interpretMealText(
   const result = parseInterpretResult(data);
   if (result === null) {
     throw new ApiError('invalid-response', 'The meal interpretation response is invalid.', {
+      httpStatus,
+      requestId,
+    });
+  }
+
+  return result;
+}
+
+export async function interpretMealImage(
+  input: InterpretMealImageInput,
+  signal?: AbortSignal,
+): Promise<ImageMealInterpretResult> {
+  if (!isRecord(input) || !isNonBlankString(input.locale)) {
+    throw new ApiError('config', 'The image meal interpretation input is invalid.');
+  }
+
+  const imageFile = createMealImageFormFile(input.image);
+  const body = new FormData();
+  body.append('image', imageFile);
+  body.append('locale', input.locale);
+
+  const { data, httpStatus, requestId } = await postMealAiFormData(
+    '/ai/meals/interpret-image',
+    body,
+    signal,
+  );
+
+  const result = parseImageInterpretResult(data);
+  if (result === null) {
+    throw new ApiError('invalid-response', 'The image meal interpretation response is invalid.', {
       httpStatus,
       requestId,
     });

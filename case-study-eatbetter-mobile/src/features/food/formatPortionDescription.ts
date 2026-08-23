@@ -1,44 +1,20 @@
 import type { FoodPortion } from '../../domain/food';
 
-const AMOUNT_MATCH_TOLERANCE = 1e-9;
-const LEADING_AMOUNT_PATTERN = /^(\d+\s*\/\s*\d+|\d+(?:\.\d+)?)(?=\s|$)/;
+const UNICODE_FRACTION_CHARACTERS = '¼½¾⅐⅑⅒⅓⅔⅕⅖⅗⅘⅙⅚⅛⅜⅝⅞';
+const LEADING_EXPLICIT_AMOUNT_PATTERN = new RegExp(
+  `^(?:\\d+\\s+\\d+\\s*\\/\\s*\\d+|\\d+\\s*\\/\\s*\\d+|\\d+\\s*[${UNICODE_FRACTION_CHARACTERS}]|[${UNICODE_FRACTION_CHARACTERS}]|\\d+(?:\\.\\d+)?)(?=\\s|$)`,
+);
 
-function parseLeadingAmount(value: string): number | null {
-  if (value.includes('/')) {
-    const [numeratorText, denominatorText] = value.split('/');
-    const numerator = Number(numeratorText.trim());
-    const denominator = Number(denominatorText.trim());
+export function formatPortionAmountAndMeasure(amount: number, measure: string): string {
+  const trimmedMeasure = measure.trim();
 
-    if (!Number.isFinite(numerator) || !Number.isFinite(denominator) || denominator === 0) {
-      return null;
-    }
-
-    return numerator / denominator;
-  }
-
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : null;
-}
-
-function measureIncludesEquivalentAmount(amount: number, measure: string): boolean {
-  const leadingAmountText = measure.match(LEADING_AMOUNT_PATTERN)?.[1];
-
-  if (leadingAmountText === undefined) {
-    return false;
-  }
-
-  const leadingAmount = parseLeadingAmount(leadingAmountText);
-  return (
-    leadingAmount !== null &&
-    Math.abs(leadingAmount - amount) <= AMOUNT_MATCH_TOLERANCE
-  );
+  return LEADING_EXPLICIT_AMOUNT_PATTERN.test(trimmedMeasure)
+    ? trimmedMeasure
+    : `${amount} ${trimmedMeasure}`.trim();
 }
 
 export function formatPortionDescription(portion: FoodPortion): string {
-  const measure = portion.measure.trim();
-  const amountAndMeasure = measureIncludesEquivalentAmount(portion.amount, measure)
-    ? measure
-    : `${portion.amount} ${measure}`.trim();
+  const amountAndMeasure = formatPortionAmountAndMeasure(portion.amount, portion.measure);
 
   return `${amountAndMeasure} · ${portion.grams} g`;
 }

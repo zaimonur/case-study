@@ -1,7 +1,9 @@
 import type { MealItem, MealSelectionSnapshot } from '../../domain/meal';
-import type { ReadyMealAiItem } from '../../domain/mealAi';
+import type { ReadyImageMealAiItem, ReadyMealAiItem } from '../../domain/mealAi';
 
-export function mapReadyMealAiItemToMealItem(item: ReadyMealAiItem): MealItem {
+export function mapReadyMealAiItemToMealItem(
+  item: ReadyMealAiItem | ReadyImageMealAiItem,
+): MealItem {
   const selection: MealSelectionSnapshot =
     item.selection.kind === 'grams'
       ? {

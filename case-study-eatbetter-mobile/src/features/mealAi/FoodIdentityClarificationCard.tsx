@@ -1,11 +1,14 @@
 import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
 
-import type { FoodIdentityClarificationMealAiItem } from '../../domain/mealAi';
+import type {
+  FoodIdentityClarificationImageMealAiItem,
+  FoodIdentityClarificationMealAiItem,
+} from '../../domain/mealAi';
 import { getMealAiErrorPresentation } from './mealAiErrorPresentation';
 import type { MealAiResolveRuntime } from './mealAiSession';
 
 type FoodIdentityClarificationCardProps = {
-  item: FoodIdentityClarificationMealAiItem;
+  item: FoodIdentityClarificationMealAiItem | FoodIdentityClarificationImageMealAiItem;
   itemIndex: number;
   onSelectCandidate: (itemIndex: number, foodId: number) => Promise<void>;
   resolve: MealAiResolveRuntime;
@@ -22,16 +25,22 @@ export function FoodIdentityClarificationCard({
     resolve.status === 'error' ? getMealAiErrorPresentation(resolve.error) : null;
   const canResolve = !isResolving && (errorPresentation === null || errorPresentation.retryable);
   const candidates = item.clarification.candidates;
+  const question =
+    'mention' in item
+      ? `“${item.mention}” için hangisini kastettin?`
+      : `Fotoğraftaki “${item.observation}” için hangisi doğru?`;
+  const guidance =
+    'mention' in item
+      ? 'Bu yiyecek için güvenilir bir seçenek bulamadım. Açıklamayı düzenleyebilirsin.'
+      : 'Bu yiyecek için güvenilir bir seçenek bulamadım. Yeni giriş yapıp başka bir fotoğraf deneyebilirsin.';
 
   return (
     <View style={styles.card}>
       <Text style={styles.eyebrow}>Yiyecek seçimi</Text>
-      <Text style={styles.question}>“{item.mention}” için hangisini kastettin?</Text>
+      <Text style={styles.question}>{question}</Text>
 
       {candidates.length === 0 ? (
-        <Text style={styles.guidance}>
-          Bu yiyecek için güvenilir bir seçenek bulamadım. Açıklamayı düzenleyebilirsin.
-        </Text>
+        <Text style={styles.guidance}>{guidance}</Text>
       ) : (
         <View style={styles.candidates}>
           {candidates.map((candidate, candidateIndex) => (

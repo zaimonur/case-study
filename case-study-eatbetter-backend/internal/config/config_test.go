@@ -44,6 +44,15 @@ func TestLoadUsesDefaults(t *testing.T) {
 	if cfg.Groq.Timeout != 10*time.Second {
 		t.Fatalf("Groq.Timeout = %s, want 10s", cfg.Groq.Timeout)
 	}
+	if cfg.Gemini.APIKey != "" {
+		t.Fatalf("Gemini.APIKey = %q, want empty", cfg.Gemini.APIKey)
+	}
+	if cfg.Gemini.Model != "gemini-2.5-flash" {
+		t.Fatalf("Gemini.Model = %q, want gemini-2.5-flash", cfg.Gemini.Model)
+	}
+	if cfg.Gemini.Timeout != 15*time.Second {
+		t.Fatalf("Gemini.Timeout = %s, want 15s", cfg.Gemini.Timeout)
+	}
 }
 
 func TestLoadReadsOverrides(t *testing.T) {
@@ -64,6 +73,9 @@ func TestLoadReadsOverrides(t *testing.T) {
 		"GROQ_API_KEY":             "synthetic-test-key",
 		"GROQ_MODEL":               "configured-model",
 		"GROQ_TIMEOUT":             "1500ms",
+		"GEMINI_API_KEY":           "synthetic-gemini-test-key",
+		"GEMINI_MODEL":             "configured-gemini-model",
+		"GEMINI_TIMEOUT":           "2500ms",
 	}))
 	if err != nil {
 		t.Fatalf("load config: %v", err)
@@ -80,6 +92,24 @@ func TestLoadReadsOverrides(t *testing.T) {
 	}
 	if cfg.Groq.APIKey != "synthetic-test-key" || cfg.Groq.Model != "configured-model" || cfg.Groq.Timeout != 1500*time.Millisecond {
 		t.Fatalf("unexpected Groq overrides: model=%q timeout=%s", cfg.Groq.Model, cfg.Groq.Timeout)
+	}
+	if cfg.Gemini.APIKey != "synthetic-gemini-test-key" || cfg.Gemini.Model != "configured-gemini-model" || cfg.Gemini.Timeout != 2500*time.Millisecond {
+		t.Fatalf("unexpected Gemini overrides: model=%q timeout=%s", cfg.Gemini.Model, cfg.Gemini.Timeout)
+	}
+}
+
+func TestLoadAllowsExplicitlyEmptyGeminiAPIKey(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := load(mapLookup(map[string]string{
+		"DATABASE_URL":   "postgres://localhost/eatbetter",
+		"GEMINI_API_KEY": "",
+	}))
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if cfg.Gemini.APIKey != "" {
+		t.Fatalf("Gemini.APIKey = %q, want empty", cfg.Gemini.APIKey)
 	}
 }
 
@@ -111,6 +141,10 @@ func TestLoadRejectsInvalidValues(t *testing.T) {
 		{name: "invalid Groq timeout", overrides: map[string]string{"GROQ_TIMEOUT": "later"}, wantError: "GROQ_TIMEOUT"},
 		{name: "zero Groq timeout", overrides: map[string]string{"GROQ_TIMEOUT": "0s"}, wantError: "GROQ_TIMEOUT"},
 		{name: "negative Groq timeout", overrides: map[string]string{"GROQ_TIMEOUT": "-1s"}, wantError: "GROQ_TIMEOUT"},
+		{name: "blank Gemini model", overrides: map[string]string{"GEMINI_MODEL": "  "}, wantError: "GEMINI_MODEL"},
+		{name: "invalid Gemini timeout", overrides: map[string]string{"GEMINI_TIMEOUT": "later"}, wantError: "GEMINI_TIMEOUT"},
+		{name: "zero Gemini timeout", overrides: map[string]string{"GEMINI_TIMEOUT": "0s"}, wantError: "GEMINI_TIMEOUT"},
+		{name: "negative Gemini timeout", overrides: map[string]string{"GEMINI_TIMEOUT": "-1s"}, wantError: "GEMINI_TIMEOUT"},
 	}
 
 	for _, tt := range tests {
@@ -138,6 +172,23 @@ func TestLoadErrorsNeverContainGroqAPIKey(t *testing.T) {
 		"DATABASE_URL": "postgres://localhost/eatbetter",
 		"GROQ_API_KEY": secret,
 		"GROQ_MODEL":   " ",
+	}))
+	if err == nil {
+		t.Fatal("load config succeeded, want error")
+	}
+	if strings.Contains(err.Error(), secret) {
+		t.Fatalf("configuration error exposed API key: %v", err)
+	}
+}
+
+func TestLoadErrorsNeverContainGeminiAPIKey(t *testing.T) {
+	t.Parallel()
+
+	const secret = "synthetic-sensitive-gemini-key-content"
+	_, err := load(mapLookup(map[string]string{
+		"DATABASE_URL":   "postgres://localhost/eatbetter",
+		"GEMINI_API_KEY": secret,
+		"GEMINI_MODEL":   " ",
 	}))
 	if err == nil {
 		t.Fatal("load config succeeded, want error")

@@ -27,6 +27,17 @@ export function getMealAiErrorPresentation(error: Error): MealAiErrorPresentatio
     };
   }
 
+  if (
+    (error.kind === 'http' && error.httpStatus === 504) ||
+    error.backendStatus === 'ai_timeout' ||
+    error.backendStatus === 'dependency_timeout'
+  ) {
+    return {
+      message: 'İstek zaman aşımına uğradı. Tekrar deneyebilirsin.',
+      retryable: true,
+    };
+  }
+
   if (error.kind === 'http' && error.httpStatus === 429) {
     return {
       message: 'Çok fazla istek gönderildi. Biraz bekleyip tekrar deneyebilirsin.',
@@ -34,16 +45,19 @@ export function getMealAiErrorPresentation(error: Error): MealAiErrorPresentatio
     };
   }
 
-  if (error.kind === 'http' && error.httpStatus !== undefined && error.httpStatus >= 500) {
+  if (
+    error.kind === 'invalid-response' ||
+    error.backendStatus === 'ai_invalid_response'
+  ) {
     return {
-      message: 'Servis şu anda yanıt veremiyor. Biraz sonra tekrar deneyebilirsin.',
+      message: 'Sunucudan gelen yanıt doğrulanamadı. Tekrar deneyebilirsin.',
       retryable: true,
     };
   }
 
-  if (error.kind === 'invalid-response') {
+  if (error.kind === 'http' && error.httpStatus !== undefined && error.httpStatus >= 500) {
     return {
-      message: 'Sunucudan gelen yanıt doğrulanamadı. Tekrar deneyebilirsin.',
+      message: 'Servis şu anda yanıt veremiyor. Biraz sonra tekrar deneyebilirsin.',
       retryable: true,
     };
   }

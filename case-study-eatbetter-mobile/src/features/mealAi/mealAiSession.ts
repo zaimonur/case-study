@@ -381,6 +381,25 @@ export function reconstructResolvedMealAiItem(
     throw new Error('The meal continuation returned an invalid state for the selected choice.');
   }
 
+  if (
+    choice.kind === 'grams' &&
+    (result.state !== 'ready' ||
+      result.selection.kind !== 'grams' ||
+      result.selection.grams !== choice.grams)
+  ) {
+    throw new Error('The meal continuation changed the explicit grams choice.');
+  }
+
+  if (
+    choice.kind === 'portion' &&
+    (result.state !== 'ready' ||
+      result.selection.kind !== 'portion' ||
+      result.selection.portion.portionId !== choice.portionId ||
+      result.selection.portion.quantity !== choice.quantity)
+  ) {
+    throw new Error('The meal continuation changed the explicit portion choice.');
+  }
+
   const mention = sessionItem.item.mention;
   const intent = sessionItem.originalIntent;
 

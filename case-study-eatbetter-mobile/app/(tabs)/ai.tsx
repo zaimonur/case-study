@@ -12,13 +12,45 @@ import {
   View,
 } from 'react-native';
 
+import type {
+  AmountClarificationMealAiItem,
+  ClarificationRequiredMealAiItem,
+  FoodIdentityClarificationMealAiItem,
+  ReadyMealAiItem,
+} from '../../src/domain/mealAi';
+import { FoodIdentityClarificationCard } from '../../src/features/mealAi/FoodIdentityClarificationCard';
 import { isMealAiSessionFullyReady } from '../../src/features/mealAi/mealAiSession';
 import { useMealAiSession } from '../../src/features/mealAi/useMealAiSession';
 
 const MEAL_AI_LOCALE = 'tr-TR';
 
+function isFoodIdentityClarificationItem(
+  item: ClarificationRequiredMealAiItem,
+): item is FoodIdentityClarificationMealAiItem {
+  return item.clarification.kind === 'food_identity';
+}
+
+function ReadyMealAiItemCard({ item }: { item: ReadyMealAiItem }) {
+  return (
+    <View style={[styles.itemCard, styles.readyItemCard]}>
+      <Text style={styles.readyLabel}>Hazır</Text>
+      <Text style={styles.itemName}>{item.food.displayName}</Text>
+      {item.food.brand !== null ? <Text style={styles.itemDetail}>{item.food.brand}</Text> : null}
+    </View>
+  );
+}
+
+function AmountClarificationPlaceholder({ item }: { item: AmountClarificationMealAiItem }) {
+  return (
+    <View style={styles.itemCard}>
+      <Text style={styles.itemName}>{item.food.displayName}</Text>
+      <Text style={styles.itemDetail}>Miktar bilgisini netleştirmemiz gerekiyor.</Text>
+    </View>
+  );
+}
+
 export default function AiScreen() {
-  const { state, interpret, reset } = useMealAiSession();
+  const { state, interpret, reset, resolveItem } = useMealAiSession();
   const [draft, setDraft] = useState('');
   const lastSubmittedTextRef = useRef<string | null>(null);
   const completedSessionInvalidatedRef = useRef(false);
@@ -99,6 +131,20 @@ export default function AiScreen() {
     interpretCommandInFlightRef.current = false;
     Keyboard.dismiss();
   }, [reset]);
+
+  const selectFoodCandidate = useCallback(
+    async (itemIndex: number, foodId: number) => {
+      try {
+        await resolveItem(itemIndex, {
+          kind: 'food_identity',
+          foodId,
+        });
+      } catch {
+        // Task 2 rejects stale, duplicate, or otherwise invalid local commands.
+      }
+    },
+    [resolveItem],
+  );
 
   const fullyReady = state.status === 'active' && isMealAiSessionFullyReady(state);
 
@@ -225,13 +271,41 @@ export default function AiScreen() {
         {state.status === 'active' ? (
           <View accessibilityLiveRegion="polite" style={styles.stateCard}>
             <Text style={styles.stateTitle}>
-              {fullyReady ? 'Öğünün anlaşıldı' : 'Birkaç ayrıntı gerekiyor'}
+              {fullyReady ? 'Öğünün anlaşıldı' : 'Öğünü netleştirelim'}
             </Text>
             <Text style={styles.stateText}>
               {fullyReady
                 ? 'Yazdığın yiyecekleri başarıyla yorumladım.'
                 : 'Öğünü tamamlamak için birkaç ayrıntıyı netleştirmemiz gerekiyor.'}
             </Text>
+            <View style={styles.sessionItems}>
+              {state.items.map((sessionItem, itemIndex) => {
+                const item = sessionItem.item;
+
+                if (item.state === 'ready') {
+                  return <ReadyMealAiItemCard item={item} key={`meal-item-${itemIndex}`} />;
+                }
+
+                if (isFoodIdentityClarificationItem(item)) {
+                  return (
+                    <FoodIdentityClarificationCard
+                      item={item}
+                      itemIndex={itemIndex}
+                      key={`meal-item-${itemIndex}`}
+                      onSelectCandidate={selectFoodCandidate}
+                      resolve={sessionItem.resolve}
+                    />
+                  );
+                }
+
+                return (
+                  <AmountClarificationPlaceholder
+                    item={item}
+                    key={`meal-item-${itemIndex}`}
+                  />
+                );
+              })}
+            </View>
             <Pressable
               accessibilityRole="button"
               onPress={startNewEntry}
@@ -304,6 +378,19 @@ const styles = StyleSheet.create({
   loadingCopy: { flex: 1, gap: 3 },
   stateTitle: { color: '#1d2b26', fontSize: 17, fontWeight: '700' },
   stateText: { color: '#52605b', fontSize: 15, lineHeight: 22 },
+  sessionItems: { gap: 12, marginTop: 2 },
+  itemCard: {
+    gap: 5,
+    borderWidth: 1,
+    borderColor: '#dce7e1',
+    borderRadius: 14,
+    padding: 15,
+    backgroundColor: '#f8faf9',
+  },
+  readyItemCard: { borderColor: '#b9d8ca', backgroundColor: '#eff7f3' },
+  readyLabel: { color: '#28785f', fontSize: 13, fontWeight: '700' },
+  itemName: { color: '#1d2b26', fontSize: 16, fontWeight: '700' },
+  itemDetail: { color: '#64716c', fontSize: 14, lineHeight: 20 },
   errorCard: { borderColor: '#ead8d5' },
   errorTitle: { color: '#7a3028', fontSize: 17, fontWeight: '700' },
   actionRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginTop: 2 },

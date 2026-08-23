@@ -9,7 +9,8 @@ import {
   type CalculateNutritionInput,
 } from '../../src/api/nutrition';
 import type { FoodDetail } from '../../src/domain/food';
-import type { MealRecord, MealSelectionSnapshot } from '../../src/domain/meal';
+import type { MealItem, MealSelectionSnapshot } from '../../src/domain/meal';
+import { createLocalMealRecord } from '../../src/domain/mealRecord';
 import type { CalculatedNutrition } from '../../src/domain/nutrition';
 import { CalculatedNutritionCard } from '../../src/features/food/CalculatedNutritionCard';
 import { NutritionReference } from '../../src/features/food/NutritionReference';
@@ -42,8 +43,6 @@ type CalculationState =
   | { status: 'success'; success: SuccessfulCalculation };
 
 type SaveStatus = 'idle' | 'saving' | 'error';
-
-let mealIdSequence = 0;
 
 function parseFoodId(id: string | string[] | undefined): number | null {
   const routeId = Array.isArray(id) ? id[0] : id;
@@ -128,16 +127,10 @@ function buildCalculationCandidate(
   return null;
 }
 
-function createLocalMealId(): string {
-  mealIdSequence += 1;
-  const randomPart = Math.random().toString(36).slice(2, 10);
-  return `meal-${Date.now().toString(36)}-${mealIdSequence.toString(36)}-${randomPart}`;
-}
-
-function createMealRecord(
+function mapManualCalculationToMealItem(
   food: FoodDetail,
   calculation: SuccessfulCalculation,
-): MealRecord {
+): MealItem {
   const selection: MealSelectionSnapshot =
     calculation.selection.kind === 'grams'
       ? { kind: 'grams', grams: calculation.selection.grams }
@@ -151,24 +144,18 @@ function createMealRecord(
         };
 
   return {
-    id: createLocalMealId(),
-    loggedAt: new Date().toISOString(),
-    items: [
-      {
-        foodId: food.foodId,
-        displayName: food.displayName,
-        canonicalName: food.canonicalName,
-        brand: food.brand,
-        resolvedGrams: calculation.result.resolvedGrams,
-        nutrition: {
-          caloriesKcal: calculation.result.nutrition.caloriesKcal,
-          proteinG: calculation.result.nutrition.proteinG,
-          carbohydratesG: calculation.result.nutrition.carbohydratesG,
-          fatG: calculation.result.nutrition.fatG,
-        },
-        selection,
-      },
-    ],
+    foodId: food.foodId,
+    displayName: food.displayName,
+    canonicalName: food.canonicalName,
+    brand: food.brand,
+    resolvedGrams: calculation.result.resolvedGrams,
+    nutrition: {
+      caloriesKcal: calculation.result.nutrition.caloriesKcal,
+      proteinG: calculation.result.nutrition.proteinG,
+      carbohydratesG: calculation.result.nutrition.carbohydratesG,
+      fatG: calculation.result.nutrition.fatG,
+    },
+    selection,
   };
 }
 
@@ -429,7 +416,8 @@ export default function FoodDetailScreen() {
       return;
     }
 
-    const mealToSave = createMealRecord(food, freshCalculation);
+    const mealItem = mapManualCalculationToMealItem(food, freshCalculation);
+    const mealToSave = createLocalMealRecord([mealItem]);
     saveInFlightRef.current = true;
     setSaveStatus('saving');
 

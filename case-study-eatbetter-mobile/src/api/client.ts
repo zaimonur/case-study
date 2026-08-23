@@ -1,4 +1,4 @@
-export type ApiErrorKind = 'config' | 'network' | 'http' | 'invalid-response';
+export type ApiErrorKind = 'config' | 'network' | 'http' | 'invalid-response' | 'timeout';
 
 export type ApiErrorMetadata = {
   httpStatus?: number;

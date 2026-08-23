@@ -1,6 +1,7 @@
 import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import type { MealItem, MealSelectionSnapshot } from '../../domain/meal';
+import { formatPortionAmountAndMeasure } from '../food/formatPortionDescription';
 
 type MealAiReviewCardProps = {
   hydrationStatus: 'hydrating' | 'ready' | 'error';
@@ -18,7 +19,14 @@ function formatSelection(selection: MealSelectionSnapshot): string {
     return `${selection.grams} g`;
   }
 
-  return `${selection.quantity} × ${selection.amount} ${selection.measure}`;
+  const portionDescription = formatPortionAmountAndMeasure(
+    selection.amount,
+    selection.measure,
+  );
+
+  return selection.quantity === 1
+    ? portionDescription
+    : `${selection.quantity} × ${portionDescription}`;
 }
 
 export function MealAiReviewCard({

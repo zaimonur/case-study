@@ -37,6 +37,11 @@ type PostJsonOptions = {
   signal?: AbortSignal;
 };
 
+type PostFormDataOptions = {
+  body: FormData;
+  signal?: AbortSignal;
+};
+
 export type ApiJsonResult = {
   data: unknown;
   httpStatus: number;
@@ -170,6 +175,31 @@ export async function postJson(path: string, options: PostJsonOptions): Promise<
         'Content-Type': 'application/json',
       },
       body: JSON.stringify(options.body),
+      signal: options.signal,
+    });
+  } catch (error) {
+    if (isAbortError(error)) {
+      throw error;
+    }
+
+    throw new ApiError('network', 'The API request could not be completed.', {}, { cause: error });
+  }
+
+  return parseJsonResponse(response);
+}
+
+export async function postFormData(
+  path: string,
+  options: PostFormDataOptions,
+): Promise<ApiJsonResult> {
+  const url = buildApiUrl(path, {});
+  let response: Response;
+
+  try {
+    response = await fetch(url, {
+      method: 'POST',
+      headers: { Accept: 'application/json' },
+      body: options.body,
       signal: options.signal,
     });
   } catch (error) {

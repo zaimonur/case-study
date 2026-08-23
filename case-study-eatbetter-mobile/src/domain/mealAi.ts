@@ -98,6 +98,36 @@ export type ClarificationRequiredMealAiItem =
 
 export type MealAiItem = ReadyMealAiItem | ClarificationRequiredMealAiItem;
 
+type ImageMealAiInterpretedItemBase = {
+  observation: string;
+  intent: MealAiIntent;
+};
+
+export type ReadyImageMealAiItem = ImageMealAiInterpretedItemBase & {
+  state: 'ready';
+  food: MealAiResolvedFood;
+  selection: MealAiSelection;
+  preview: MealAiNutritionPreview;
+};
+
+export type FoodIdentityClarificationImageMealAiItem = ImageMealAiInterpretedItemBase & {
+  state: 'clarification_required';
+  food: null;
+  clarification: MealAiFoodIdentityClarification;
+};
+
+export type AmountClarificationImageMealAiItem = ImageMealAiInterpretedItemBase & {
+  state: 'clarification_required';
+  food: MealAiResolvedFood;
+  clarification: MealAiAmountClarification;
+};
+
+export type ClarificationRequiredImageMealAiItem =
+  | FoodIdentityClarificationImageMealAiItem
+  | AmountClarificationImageMealAiItem;
+
+export type ImageMealAiItem = ReadyImageMealAiItem | ClarificationRequiredImageMealAiItem;
+
 export type EmptyMealInterpretResult = {
   state: 'empty';
   items: [];
@@ -117,6 +147,26 @@ export type MealInterpretResult =
   | EmptyMealInterpretResult
   | ReadyMealInterpretResult
   | ClarificationRequiredMealInterpretResult;
+
+export type EmptyImageMealInterpretResult = {
+  state: 'empty';
+  items: [];
+};
+
+export type ReadyImageMealInterpretResult = {
+  state: 'ready';
+  items: ReadyImageMealAiItem[];
+};
+
+export type ClarificationRequiredImageMealInterpretResult = {
+  state: 'clarification_required';
+  items: ImageMealAiItem[];
+};
+
+export type ImageMealInterpretResult =
+  | EmptyImageMealInterpretResult
+  | ReadyImageMealInterpretResult
+  | ClarificationRequiredImageMealInterpretResult;
 
 export type ReadyMealAiResolveResult = {
   state: 'ready';

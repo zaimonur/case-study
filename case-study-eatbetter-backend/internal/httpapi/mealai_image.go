@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -27,6 +28,7 @@ const (
 	imageUploadInvalidRequest imageUploadErrorKind = iota + 1
 	imageUploadUnsupportedMediaType
 	imageUploadPayloadTooLarge
+	imageUploadRequestCanceled
 )
 
 type imageUploadError struct{ kind imageUploadErrorKind }
@@ -37,6 +39,8 @@ func (e *imageUploadError) Error() string {
 		return "unsupported media type"
 	case imageUploadPayloadTooLarge:
 		return "payload too large"
+	case imageUploadRequestCanceled:
+		return "request canceled"
 	default:
 		return "invalid multipart request"
 	}
@@ -101,7 +105,7 @@ func parseMealImageRequest(w http.ResponseWriter, r *http.Request) (mealai.Image
 	}
 	reader, err := r.MultipartReader()
 	if err != nil {
-		return mealai.ImageRequest{}, classifyMultipartError(err)
+		return mealai.ImageRequest{}, classifyMultipartError(r.Context(), requestBody, imageUploadInvalidRequest, err)
 	}
 
 	var imageData []byte
@@ -116,20 +120,20 @@ func parseMealImageRequest(w http.ResponseWriter, r *http.Request) (mealai.Image
 			break
 		}
 		if err != nil {
-			return mealai.ImageRequest{}, classifyMultipartError(err)
+			return mealai.ImageRequest{}, classifyMultipartError(r.Context(), requestBody, imageUploadInvalidRequest, err)
 		}
 
 		switch part.FormName() {
 		case "image":
 			if imageSeen {
-				return mealai.ImageRequest{}, closePartWithError(part, requestBody, imageUploadInvalidRequest)
+				return mealai.ImageRequest{}, closePartWithError(r.Context(), part, requestBody, imageUploadInvalidRequest)
 			}
 			imageSeen = true
 			imageMIME, err = parseImagePartMIME(part.Header.Get("Content-Type"))
 			if err != nil {
-				return mealai.ImageRequest{}, closePartWithError(part, requestBody, imageUploadUnsupportedMediaType)
+				return mealai.ImageRequest{}, closePartWithError(r.Context(), part, requestBody, imageUploadUnsupportedMediaType)
 			}
-			imageData, err = readBoundedMultipartPart(part, requestBody, foodimageextraction.MaxImageBytes, imageUploadPayloadTooLarge)
+			imageData, err = readBoundedMultipartPart(r.Context(), part, requestBody, foodimageextraction.MaxImageBytes, imageUploadPayloadTooLarge)
 			if err != nil {
 				return mealai.ImageRequest{}, err
 			}
@@ -138,16 +142,16 @@ func parseMealImageRequest(w http.ResponseWriter, r *http.Request) (mealai.Image
 			}
 		case "locale":
 			if localeSeen {
-				return mealai.ImageRequest{}, closePartWithError(part, requestBody, imageUploadInvalidRequest)
+				return mealai.ImageRequest{}, closePartWithError(r.Context(), part, requestBody, imageUploadInvalidRequest)
 			}
 			localeSeen = true
-			localeBytes, readErr := readBoundedMultipartPart(part, requestBody, mealImageLocaleByteLimit, imageUploadInvalidRequest)
+			localeBytes, readErr := readBoundedMultipartPart(r.Context(), part, requestBody, mealImageLocaleByteLimit, imageUploadInvalidRequest)
 			if readErr != nil {
 				return mealai.ImageRequest{}, readErr
 			}
 			locale = string(localeBytes)
 		default:
-			return mealai.ImageRequest{}, closePartWithError(part, requestBody, imageUploadInvalidRequest)
+			return mealai.ImageRequest{}, closePartWithError(r.Context(), part, requestBody, imageUploadInvalidRequest)
 		}
 	}
 	if !imageSeen {
@@ -176,34 +180,36 @@ func parseImagePartMIME(value string) (string, error) {
 	}
 }
 
-func readBoundedMultipartPart(part *multipart.Part, requestBody *maxBytesTrackingReadCloser, maximum int, overflowKind imageUploadErrorKind) ([]byte, error) {
+func readBoundedMultipartPart(ctx context.Context, part *multipart.Part, requestBody *maxBytesTrackingReadCloser, maximum int, overflowKind imageUploadErrorKind) ([]byte, error) {
 	data, readErr := io.ReadAll(io.LimitReader(part, int64(maximum)+1))
 	closeErr := part.Close()
-	if requestBody.exceeded || isMaxBytesError(readErr) || isMaxBytesError(closeErr) {
+	if requestBody.exceeded || isMaxBytesError(readErr) || isMaxBytesError(closeErr) ||
+		(len(data) > maximum && overflowKind == imageUploadPayloadTooLarge) {
 		return nil, &imageUploadError{kind: imageUploadPayloadTooLarge}
 	}
+	if isCancellationError(requestBody.terminalErr) {
+		return nil, &imageUploadError{kind: imageUploadRequestCanceled}
+	}
 	if readErr != nil || closeErr != nil {
-		return nil, &imageUploadError{kind: imageUploadInvalidRequest}
+		return nil, classifyMultipartError(ctx, requestBody, imageUploadInvalidRequest, readErr, closeErr)
 	}
 	if len(data) > maximum {
+		if isRequestCancellation(ctx, requestBody) {
+			return nil, &imageUploadError{kind: imageUploadRequestCanceled}
+		}
 		return nil, &imageUploadError{kind: overflowKind}
 	}
 	return data, nil
 }
 
-func closePartWithError(part *multipart.Part, requestBody *maxBytesTrackingReadCloser, fallback imageUploadErrorKind) error {
-	if err := part.Close(); err != nil {
-		return classifyMultipartError(err)
-	}
-	if requestBody.exceeded {
-		return &imageUploadError{kind: imageUploadPayloadTooLarge}
-	}
-	return &imageUploadError{kind: fallback}
+func closePartWithError(ctx context.Context, part *multipart.Part, requestBody *maxBytesTrackingReadCloser, fallback imageUploadErrorKind) error {
+	return classifyMultipartError(ctx, requestBody, fallback, part.Close())
 }
 
 type maxBytesTrackingReadCloser struct {
 	io.ReadCloser
-	exceeded bool
+	exceeded    bool
+	terminalErr error
 }
 
 func (reader *maxBytesTrackingReadCloser) Read(buffer []byte) (int, error) {
@@ -211,14 +217,37 @@ func (reader *maxBytesTrackingReadCloser) Read(buffer []byte) (int, error) {
 	if isMaxBytesError(err) {
 		reader.exceeded = true
 	}
+	if err != nil {
+		reader.terminalErr = err
+	}
 	return read, err
 }
 
-func classifyMultipartError(err error) error {
-	if isMaxBytesError(err) {
+func classifyMultipartError(ctx context.Context, requestBody *maxBytesTrackingReadCloser, fallback imageUploadErrorKind, observedErrors ...error) error {
+	if requestBody.exceeded || isMaxBytesError(requestBody.terminalErr) || anyErrorMatches(observedErrors, isMaxBytesError) {
 		return &imageUploadError{kind: imageUploadPayloadTooLarge}
 	}
-	return &imageUploadError{kind: imageUploadInvalidRequest}
+	if isRequestCancellation(ctx, requestBody) || anyErrorMatches(observedErrors, isCancellationError) {
+		return &imageUploadError{kind: imageUploadRequestCanceled}
+	}
+	return &imageUploadError{kind: fallback}
+}
+
+func isRequestCancellation(ctx context.Context, requestBody *maxBytesTrackingReadCloser) bool {
+	return isCancellationError(requestBody.terminalErr) || isCancellationError(ctx.Err())
+}
+
+func isCancellationError(err error) bool {
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
+}
+
+func anyErrorMatches(errs []error, matches func(error) bool) bool {
+	for _, err := range errs {
+		if matches(err) {
+			return true
+		}
+	}
+	return false
 }
 
 func isMaxBytesError(err error) bool {
@@ -252,6 +281,8 @@ func imageUploadErrorResponse(err error) (int, string) {
 		return http.StatusUnsupportedMediaType, "unsupported_media_type"
 	case imageUploadPayloadTooLarge:
 		return http.StatusRequestEntityTooLarge, "payload_too_large"
+	case imageUploadRequestCanceled:
+		return http.StatusRequestTimeout, "request_canceled"
 	default:
 		return http.StatusBadRequest, "invalid_request"
 	}

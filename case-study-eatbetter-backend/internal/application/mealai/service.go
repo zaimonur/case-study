@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/zaimonur/case-study/case-study-eatbetter-backend/internal/application/foodamount"
 	"github.com/zaimonur/case-study/case-study-eatbetter-backend/internal/application/fooddetail"
@@ -88,6 +89,9 @@ func (s *Service) InterpretImage(ctx context.Context, request ImageRequest) (Ima
 	if err != nil {
 		return ImageResult{}, mapImageExtractionError(err)
 	}
+	if err := validateImageExtraction(extraction); err != nil {
+		return ImageResult{}, newError(ErrorAIInvalidResponse, err)
+	}
 	inputs := make([]interpretationInput, 0, len(extraction.Items))
 	for _, extracted := range extraction.Items {
 		inputs = append(inputs, interpretationInput{Evidence: extracted.Observation, Intent: extracted.Intent})
@@ -104,6 +108,35 @@ func (s *Service) InterpretImage(ctx context.Context, request ImageRequest) (Ima
 		})
 	}
 	return ImageResult{State: state, Items: items}, nil
+}
+
+func validateImageExtraction(extraction foodimageextraction.ImageFoodExtraction) error {
+	if extraction.Items == nil {
+		return fmt.Errorf("image extraction items must be non-nil")
+	}
+	if len(extraction.Items) > foodimageextraction.MaxItems {
+		return fmt.Errorf("image extraction items exceeds maximum of %d", foodimageextraction.MaxItems)
+	}
+	for index, item := range extraction.Items {
+		if !validNormalizedRunes(item.Observation, 1, foodimageextraction.MaxObservationRunes) {
+			return fmt.Errorf("image extraction item %d has invalid observation", index)
+		}
+		if !validNormalizedRunes(item.Intent.Query, 2, foodimageextraction.MaxQueryRunes) {
+			return fmt.Errorf("image extraction item %d has invalid query", index)
+		}
+		if item.Intent.Quantity != nil {
+			return fmt.Errorf("image extraction item %d has quantity evidence", index)
+		}
+		if item.Intent.UnitHint != nil {
+			return fmt.Errorf("image extraction item %d has unit evidence", index)
+		}
+	}
+	return nil
+}
+
+func validNormalizedRunes(value string, minimum, maximum int) bool {
+	return utf8.ValidString(value) && strings.TrimSpace(value) == value &&
+		utf8.RuneCountInString(value) >= minimum && utf8.RuneCountInString(value) <= maximum
 }
 
 type interpretationInput struct {

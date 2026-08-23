@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/zaimonur/case-study/case-study-eatbetter-backend/internal/application/foodamount"
@@ -68,6 +69,56 @@ func TestInterpretImageEmptyExtraction(t *testing.T) {
 	}
 	if extractor.calls != 1 || resolver.calls != 0 || amount.calls != 0 {
 		t.Fatalf("extractor/resolver/amount calls = %d/%d/%d", extractor.calls, resolver.calls, amount.calls)
+	}
+}
+
+func TestInterpretImageRejectsMalformedExtractionBeforeResolution(t *testing.T) {
+	t.Parallel()
+
+	quantity := 1.0
+	unit := "piece"
+	validItem := foodimageextraction.ExtractedImageFoodIntent{
+		Observation: "an apple",
+		Intent:      foodintent.FoodIntent{Query: "apple"},
+	}
+	tooManyItems := make([]foodimageextraction.ExtractedImageFoodIntent, foodimageextraction.MaxItems+1)
+	for index := range tooManyItems {
+		tooManyItems[index] = validItem
+	}
+	tests := []struct {
+		name  string
+		items []foodimageextraction.ExtractedImageFoodIntent
+	}{
+		{name: "nil items", items: nil},
+		{name: "too many items", items: tooManyItems},
+		{name: "blank observation", items: []foodimageextraction.ExtractedImageFoodIntent{{Observation: "", Intent: validItem.Intent}}},
+		{name: "observation whitespace", items: []foodimageextraction.ExtractedImageFoodIntent{{Observation: " an apple ", Intent: validItem.Intent}}},
+		{name: "observation over rune limit", items: []foodimageextraction.ExtractedImageFoodIntent{{Observation: strings.Repeat("ö", foodimageextraction.MaxObservationRunes+1), Intent: validItem.Intent}}},
+		{name: "invalid UTF-8 observation", items: []foodimageextraction.ExtractedImageFoodIntent{{Observation: string([]byte{0xff}), Intent: validItem.Intent}}},
+		{name: "short query", items: []foodimageextraction.ExtractedImageFoodIntent{{Observation: validItem.Observation, Intent: foodintent.FoodIntent{Query: "x"}}}},
+		{name: "query whitespace", items: []foodimageextraction.ExtractedImageFoodIntent{{Observation: validItem.Observation, Intent: foodintent.FoodIntent{Query: " apple "}}}},
+		{name: "query over rune limit", items: []foodimageextraction.ExtractedImageFoodIntent{{Observation: validItem.Observation, Intent: foodintent.FoodIntent{Query: strings.Repeat("ö", foodimageextraction.MaxQueryRunes+1)}}}},
+		{name: "invalid UTF-8 query", items: []foodimageextraction.ExtractedImageFoodIntent{{Observation: validItem.Observation, Intent: foodintent.FoodIntent{Query: string([]byte{0xff, 0xfe})}}}},
+		{name: "quantity", items: []foodimageextraction.ExtractedImageFoodIntent{{Observation: validItem.Observation, Intent: foodintent.FoodIntent{Query: "apple", Quantity: &quantity}}}},
+		{name: "unit", items: []foodimageextraction.ExtractedImageFoodIntent{{Observation: validItem.Observation, Intent: foodintent.FoodIntent{Query: "apple", UnitHint: &unit}}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			extractor := &fakeImageExtractor{result: foodimageextraction.ImageFoodExtraction{Items: tt.items}}
+			resolver := &fakeFoodResolver{}
+			amount := &fakeAmountResolver{}
+			calculator := &fakeNutritionCalculator{}
+			result, err := NewService(
+				&fakeTextExtractor{}, extractor, resolver, amount, &fakeFoodDetailer{}, calculator,
+			).InterpretImage(context.Background(), ImageRequest{Image: testImageInput()})
+			if !IsKind(err, ErrorAIInvalidResponse) || result.Items != nil {
+				t.Fatalf("result/error = %#v/%v, want ai_invalid_response", result, err)
+			}
+			if extractor.calls != 1 || resolver.calls != 0 || amount.calls != 0 || calculator.calls != 0 {
+				t.Fatalf("extractor/resolver/amount/nutrition calls = %d/%d/%d/%d", extractor.calls, resolver.calls, amount.calls, calculator.calls)
+			}
+		})
 	}
 }
 

@@ -170,7 +170,7 @@ func classifyRequestError(callerContext, callContext context.Context) error {
 
 func statusError(status int) error {
 	switch status {
-	case http.StatusUnauthorized, http.StatusForbidden:
+	case http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound:
 		return foodimageextraction.NewError(foodimageextraction.ErrorProviderConfiguration, fmt.Errorf("Gemini rejected provider credentials or access"))
 	case http.StatusRequestTimeout, http.StatusGatewayTimeout:
 		return foodimageextraction.NewError(foodimageextraction.ErrorTimeout, fmt.Errorf("Gemini returned a timeout response"))

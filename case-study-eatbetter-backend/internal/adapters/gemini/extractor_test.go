@@ -224,6 +224,7 @@ func TestExtractorMapsHTTPResponsesWithoutRetryOrBodyDisclosure(t *testing.T) {
 	}{
 		{status: http.StatusUnauthorized, kind: foodimageextraction.ErrorProviderConfiguration},
 		{status: http.StatusForbidden, kind: foodimageextraction.ErrorProviderConfiguration},
+		{status: http.StatusNotFound, kind: foodimageextraction.ErrorProviderConfiguration},
 		{status: http.StatusRequestTimeout, kind: foodimageextraction.ErrorTimeout},
 		{status: http.StatusTooManyRequests, kind: foodimageextraction.ErrorRateLimit},
 		{status: http.StatusGatewayTimeout, kind: foodimageextraction.ErrorTimeout},

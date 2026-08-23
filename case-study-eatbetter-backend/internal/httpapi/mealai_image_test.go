@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"log/slog"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"net/textproto"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -212,6 +214,111 @@ func TestMealImageInterpretSizeLimits(t *testing.T) {
 	})
 }
 
+func TestMealImageInterpretClassifiesUploadCancellation(t *testing.T) {
+	t.Run("image body read", func(t *testing.T) {
+		image := append(jpegBytes(), bytes.Repeat([]byte{0x01}, 1024)...)
+		bodyBytes, contentType := newMultipartImageBody(t, []multipartTestField{{
+			name: "image", contentType: "image/jpeg", data: image,
+		}})
+		imageStart := bytes.Index(bodyBytes, image)
+		if imageStart < 0 {
+			t.Fatal("image payload not found in multipart body")
+		}
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		body := newStagedContextReadCloser(ctx, bodyBytes, imageStart+len(jpegBytes()))
+		defer body.Close()
+		request := httptest.NewRequest(http.MethodPost, "/ai/meals/interpret-image", body).WithContext(ctx)
+		request.Header.Set("Content-Type", contentType)
+		request.ContentLength = -1
+		stub := &stubMealTextInterpreter{}
+		response, done := servePreparedRequestAsync(mealRouter(stub), request)
+
+		waitForTestSignal(t, body.entered, "image body read")
+		cancel()
+		waitForTestSignal(t, done, "canceled image response")
+		assertStatusResponse(t, response, http.StatusRequestTimeout, "request_canceled")
+		if stub.imageCalls != 0 {
+			t.Fatalf("application calls = %d, want 0", stub.imageCalls)
+		}
+	})
+
+	t.Run("multipart structure read", func(t *testing.T) {
+		bodyBytes, contentType := newMultipartImageBody(t, []multipartTestField{
+			{name: "locale", data: []byte("tr")},
+			{name: "image", contentType: "image/jpeg", data: jpegBytes()},
+		})
+		const headerFragment = "Content-Type: image/"
+		headerEnd := bytes.Index(bodyBytes, []byte(headerFragment))
+		if headerEnd < 0 {
+			t.Fatal("second-part header not found in multipart body")
+		}
+		headerEnd += len(headerFragment)
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		body := newStagedContextReadCloser(ctx, bodyBytes, headerEnd)
+		defer body.Close()
+		request := httptest.NewRequest(http.MethodPost, "/ai/meals/interpret-image", body).WithContext(ctx)
+		request.Header.Set("Content-Type", contentType)
+		request.ContentLength = -1
+		stub := &stubMealTextInterpreter{}
+		response, done := servePreparedRequestAsync(mealRouter(stub), request)
+
+		waitForTestSignal(t, body.entered, "multipart structure read")
+		cancel()
+		waitForTestSignal(t, done, "canceled multipart response")
+		assertStatusResponse(t, response, http.StatusRequestTimeout, "request_canceled")
+		if stub.imageCalls != 0 {
+			t.Fatalf("application calls = %d, want 0", stub.imageCalls)
+		}
+	})
+
+	t.Run("request deadline", func(t *testing.T) {
+		image := append(jpegBytes(), bytes.Repeat([]byte{0x01}, 32)...)
+		bodyBytes, contentType := newMultipartImageBody(t, []multipartTestField{{
+			name: "image", contentType: "image/jpeg", data: image,
+		}})
+		imageStart := bytes.Index(bodyBytes, image)
+		if imageStart < 0 {
+			t.Fatal("image payload not found in multipart body")
+		}
+		ctx, cancel := context.WithDeadline(context.Background(), time.Unix(1, 0))
+		defer cancel()
+		body := newStagedContextReadCloser(ctx, bodyBytes, imageStart+len(jpegBytes()))
+		defer body.Close()
+		request := httptest.NewRequest(http.MethodPost, "/ai/meals/interpret-image", body).WithContext(ctx)
+		request.Header.Set("Content-Type", contentType)
+		request.ContentLength = -1
+		stub := &stubMealTextInterpreter{}
+
+		response := performPreparedRequest(mealRouter(stub), request)
+		assertStatusResponse(t, response, http.StatusRequestTimeout, "request_canceled")
+		if stub.imageCalls != 0 {
+			t.Fatalf("application calls = %d, want 0", stub.imageCalls)
+		}
+	})
+
+	t.Run("payload too large precedes cancellation", func(t *testing.T) {
+		image := make([]byte, foodimageextraction.MaxImageBytes+1)
+		copy(image, jpegBytes())
+		request := newMultipartImageRequest(t, []multipartTestField{{
+			name: "image", contentType: "image/jpeg", data: image,
+		}})
+		ctx, cancel := context.WithCancel(request.Context())
+		cancel()
+		request = request.WithContext(ctx)
+		stub := &stubMealTextInterpreter{}
+
+		response := performPreparedRequest(mealRouter(stub), request)
+		assertStatusResponse(t, response, http.StatusRequestEntityTooLarge, "payload_too_large")
+		if stub.imageCalls != 0 {
+			t.Fatalf("application calls = %d, want 0", stub.imageCalls)
+		}
+	})
+}
+
 func TestMealImageInterpretMapsApplicationErrorsWithoutDetails(t *testing.T) {
 	t.Parallel()
 
@@ -386,6 +493,14 @@ type multipartTestField struct {
 
 func newMultipartImageRequest(t *testing.T, fields []multipartTestField) *http.Request {
 	t.Helper()
+	body, contentType := newMultipartImageBody(t, fields)
+	request := httptest.NewRequest(http.MethodPost, "/ai/meals/interpret-image", bytes.NewReader(body))
+	request.Header.Set("Content-Type", contentType)
+	return request
+}
+
+func newMultipartImageBody(t *testing.T, fields []multipartTestField) ([]byte, string) {
+	t.Helper()
 
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
@@ -406,9 +521,7 @@ func newMultipartImageRequest(t *testing.T, fields []multipartTestField) *http.R
 	if err := writer.Close(); err != nil {
 		t.Fatalf("close multipart writer: %v", err)
 	}
-	request := httptest.NewRequest(http.MethodPost, "/ai/meals/interpret-image", bytes.NewReader(body.Bytes()))
-	request.Header.Set("Content-Type", writer.FormDataContentType())
-	return request
+	return body.Bytes(), writer.FormDataContentType()
 }
 
 func validImageRequest(t *testing.T) *http.Request {
@@ -420,6 +533,63 @@ func performPreparedRequest(handler http.Handler, request *http.Request) *httpte
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 	return response
+}
+
+func servePreparedRequestAsync(handler http.Handler, request *http.Request) (*httptest.ResponseRecorder, <-chan struct{}) {
+	response := httptest.NewRecorder()
+	done := make(chan struct{})
+	go func() {
+		handler.ServeHTTP(response, request)
+		close(done)
+	}()
+	return response, done
+}
+
+func waitForTestSignal(t *testing.T, signal <-chan struct{}, description string) {
+	t.Helper()
+	select {
+	case <-signal:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("timed out waiting for %s", description)
+	}
+}
+
+type stagedContextReadCloser struct {
+	ctx         context.Context
+	data        []byte
+	split       int
+	offset      int
+	entered     chan struct{}
+	closed      chan struct{}
+	enteredOnce sync.Once
+	closedOnce  sync.Once
+}
+
+func newStagedContextReadCloser(ctx context.Context, data []byte, split int) *stagedContextReadCloser {
+	return &stagedContextReadCloser{
+		ctx: ctx, data: data, split: split,
+		entered: make(chan struct{}), closed: make(chan struct{}),
+	}
+}
+
+func (reader *stagedContextReadCloser) Read(buffer []byte) (int, error) {
+	if reader.offset < reader.split {
+		read := copy(buffer, reader.data[reader.offset:reader.split])
+		reader.offset += read
+		return read, nil
+	}
+	reader.enteredOnce.Do(func() { close(reader.entered) })
+	select {
+	case <-reader.ctx.Done():
+		return 0, reader.ctx.Err()
+	case <-reader.closed:
+		return 0, io.ErrClosedPipe
+	}
+}
+
+func (reader *stagedContextReadCloser) Close() error {
+	reader.closedOnce.Do(func() { close(reader.closed) })
+	return nil
 }
 
 func assertStatusResponse(t *testing.T, response *httptest.ResponseRecorder, status int, body string) {

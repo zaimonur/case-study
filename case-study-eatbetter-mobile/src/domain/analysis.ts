@@ -4,6 +4,7 @@ import {
   type DailyNutritionAggregate,
 } from './dailyTotals';
 import type { MealRecord } from './meal';
+import { createLocalDateKey } from './localDate';
 
 export type AnalysisAverageMetricStatus =
   | 'exact'
@@ -61,14 +62,6 @@ const NUTRITION_METRIC_KEYS: NutritionMetricKey[] = [
   'carbohydratesG',
   'fatG',
 ];
-
-function createLocalDateKey(date: Date): string {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, '0');
-  const day = String(date.getDate()).padStart(2, '0');
-
-  return `${year}-${month}-${day}`;
-}
 
 function createLocalCalendarDay(referenceDate: Date, daysAgo: number): Date {
   return new Date(

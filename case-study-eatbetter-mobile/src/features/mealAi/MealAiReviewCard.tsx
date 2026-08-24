@@ -7,7 +7,7 @@ type MealAiReviewCardProps = {
   hydrationStatus: 'hydrating' | 'ready' | 'error';
   items: MealItem[];
   onSave: () => Promise<void>;
-  saveStatus: 'idle' | 'saving' | 'error';
+  saveStatus: 'idle' | 'saving' | 'error' | 'success';
 };
 
 function formatNutritionValue(value: number | null, unit: string): string {
@@ -96,7 +96,11 @@ export function MealAiReviewCard({
         ))}
       </View>
 
-      {hydrationStatus === 'ready' ? (
+      {saveStatus === 'success' ? (
+        <Text accessibilityLiveRegion="polite" style={styles.savedStatusText}>
+          Öğün günlüğe eklendi.
+        </Text>
+      ) : hydrationStatus === 'ready' ? (
         <Pressable
           accessibilityRole="button"
           accessibilityState={{ disabled: isSaving }}
@@ -163,5 +167,12 @@ const styles = StyleSheet.create({
   saveButtonPressed: { opacity: 0.8 },
   saveButtonText: { color: '#ffffff', fontSize: 16, fontWeight: '700' },
   storeStatusText: { color: '#64716c', fontSize: 14, lineHeight: 20, textAlign: 'center' },
+  savedStatusText: {
+    color: '#194c3c',
+    fontSize: 15,
+    fontWeight: '700',
+    lineHeight: 21,
+    textAlign: 'center',
+  },
   errorText: { color: '#8e3b32', fontSize: 14, lineHeight: 20 },
 });

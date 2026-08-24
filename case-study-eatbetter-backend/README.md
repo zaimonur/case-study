@@ -280,6 +280,10 @@ DATABASE_URL='postgres://...' go run ./cmd/food-search-eval -iterations 3
 
 `-summary-only` emits compact metrics and `-failures-only` retains lexical or product-policy misses. Historical Phase 5 measurements remain in [`docs/phase5-search-evaluation.md`](docs/phase5-search-evaluation.md); Phase 6 product-policy and query-plan observations are in [`docs/phase6-product-core.md`](docs/phase6-product-core.md).
 
+## AI Accuracy Evaluation
+
+The first `COMPLETE` conversational MealAI baseline used a frozen 30-case labeled set: canonical resolution was 11/31 (35.5%), amount accuracy 8/24 (33.3%), clarification correctness 16/34 (47.1%), unsafe auto-resolution 0/7 (0.0%)—lower is better—and end-to-end success 14/30 (46.7%). The safety result means only that no unsafe `ready` auto-resolution was observed in seven eligible frozen turns; it is not a general safety claim. Failures were dominated by cases that did not reach the frozen canonical FoodID, while multi-food E2E was 0/3. See the bounded methodology, failure taxonomy, limitations, and next steps in [`docs/phase15-ai-accuracy-evaluation.md`](docs/phase15-ai-accuracy-evaluation.md).
+
 ## Current boundaries
 
-The current implementation does not include React Native changes, diary persistence, meal history, authentication, user accounts, cloud sync, OpenAI or another LLM, RAG, embeddings, pgvector, AI meal analysis/chat, recommendations, photo recognition, voice input, barcode scanning UI, micronutrient expansion, PDF reports, Redis, queues, WebSockets, background workers, runtime USDA APIs, or Open Food Facts runtime fallback.
+The current implementation does not include React Native changes, diary persistence, meal history, authentication, user accounts, cloud sync, RAG, embeddings, pgvector, recommendations, voice input, barcode scanning UI, micronutrient expansion, PDF reports, Redis, queues, WebSockets, background workers, runtime USDA APIs, or Open Food Facts runtime fallback.

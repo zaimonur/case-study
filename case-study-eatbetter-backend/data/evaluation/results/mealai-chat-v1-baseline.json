@@ -1,0 +1,928 @@
+{
+  "run_status": "COMPLETE",
+  "dataset_version": "mealai-chat-v1",
+  "dataset_sha256": "1f01eac070de57bf6bb73cb42e31cf3695642111ec3fc4db1f48080239f5b5d9",
+  "dataset_case_count": 30,
+  "dataset_turn_count": 34,
+  "frozen_task6a_git_head": "862ab8d1dcbcc34e7e28a20f2e52265f9b6bae70",
+  "started_at": "2026-08-24T19:43:31.871635Z",
+  "completed_at": "2026-08-24T19:46:44.908599Z",
+  "duration_ms": 193036.964,
+  "api_origin": "http://localhost:8080",
+  "conversation_version": 2,
+  "total_cases": 30,
+  "evaluable_cases": 30,
+  "infra_error_cases": 0,
+  "infra_errors": [],
+  "product_failure_cases": 16,
+  "canonical_resolution_accuracy": {
+    "numerator": 11,
+    "denominator": 31,
+    "percentage": 35.483870967741936
+  },
+  "amount_accuracy": {
+    "numerator": 8,
+    "denominator": 24,
+    "percentage": 33.333333333333336
+  },
+  "clarification_correctness": {
+    "numerator": 16,
+    "denominator": 34,
+    "percentage": 47.05882352941177
+  },
+  "unsafe_auto_resolution_rate": {
+    "numerator": 0,
+    "denominator": 7,
+    "percentage": 0
+  },
+  "end_to_end_success_rate": {
+    "numerator": 14,
+    "denominator": 30,
+    "percentage": 46.666666666666664
+  },
+  "cases": [
+    {
+      "case_id": "tr_low_fat_cream_cheese_direct_grams",
+      "category": "direct_auto_resolvable",
+      "locale": "tr-TR",
+      "outcome": "passed",
+      "turns": [
+        {
+          "turn_index": 0,
+          "outcome": "passed",
+          "actual_purpose": "meal_logging",
+          "actual_state": "ready",
+          "actual_active_item_index": null,
+          "assertion_failures": [],
+          "attempts": 1,
+          "items": [
+            {
+              "item_index": 0,
+              "actual_food_id": 461916,
+              "actual_resolved_grams": 150
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "case_id": "tr_almonds_decimal_kg",
+      "category": "direct_auto_resolvable",
+      "locale": "tr-TR",
+      "outcome": "failed",
+      "turns": [
+        {
+          "turn_index": 0,
+          "outcome": "failed",
+          "actual_purpose": "meal_logging",
+          "actual_state": "clarification_required",
+          "actual_active_item_index": 0,
+          "assertion_failures": [
+            "state_mismatch",
+            "clarification_kind_mismatch",
+            "active_item_mismatch",
+            "food_id_mismatch",
+            "amount_mismatch"
+          ],
+          "attempts": 1,
+          "items": [
+            {
+              "item_index": 0,
+              "actual_food_id": null,
+              "actual_resolved_grams": null
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "case_id": "tr_raw_banana_explicit_grams",
+      "category": "direct_auto_resolvable",
+      "locale": "tr-TR",
+      "outcome": "failed",
+      "turns": [
+        {
+          "turn_index": 0,
+          "outcome": "failed",
+          "actual_purpose": "meal_logging",
+          "actual_state": "clarification_required",
+          "actual_active_item_index": 0,
+          "assertion_failures": [
+            "state_mismatch",
+            "clarification_kind_mismatch",
+            "active_item_mismatch",
+            "food_id_mismatch",
+            "amount_mismatch"
+          ],
+          "attempts": 1,
+          "items": [
+            {
+              "item_index": 0,
+              "actual_food_id": null,
+              "actual_resolved_grams": null
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "case_id": "tr_whole_wheat_bread_explicit_grams",
+      "category": "direct_auto_resolvable",
+      "locale": "tr-TR",
+      "outcome": "failed",
+      "turns": [
+        {
+          "turn_index": 0,
+          "outcome": "failed",
+          "actual_purpose": "meal_logging",
+          "actual_state": "clarification_required",
+          "actual_active_item_index": 0,
+          "assertion_failures": [
+            "state_mismatch",
+            "clarification_kind_mismatch",
+            "active_item_mismatch",
+            "food_id_mismatch",
+            "amount_mismatch"
+          ],
+          "attempts": 1,
+          "items": [
+            {
+              "item_index": 0,
+              "actual_food_id": null,
+              "actual_resolved_grams": null
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "case_id": "tr_whole_milk_calorie_query",
+      "category": "direct_auto_resolvable",
+      "locale": "tr-TR",
+      "outcome": "failed",
+      "turns": [
+        {
+          "turn_index": 0,
+          "outcome": "failed",
+          "actual_purpose": "nutrition_query",
+          "actual_state": "clarification_required",
+          "actual_active_item_index": 0,
+          "assertion_failures": [
+            "state_mismatch",
+            "clarification_kind_mismatch",
+            "active_item_mismatch",
+            "food_id_mismatch",
+            "amount_mismatch"
+          ],
+          "attempts": 1,
+          "items": [
+            {
+              "item_index": 0,
+              "actual_food_id": null,
+              "actual_resolved_grams": null
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "case_id": "tr_almonds_protein_query",
+      "category": "direct_auto_resolvable",
+      "locale": "tr-TR",
+      "outcome": "failed",
+      "turns": [
+        {
+          "turn_index": 0,
+          "outcome": "failed",
+          "actual_purpose": "nutrition_query",
+          "actual_state": "clarification_required",
+          "actual_active_item_index": 0,
+          "assertion_failures": [
+            "state_mismatch",
+            "clarification_kind_mismatch",
+            "active_item_mismatch",
+            "food_id_mismatch",
+            "amount_mismatch"
+          ],
+          "attempts": 1,
+          "items": [
+            {
+              "item_index": 0,
+              "actual_food_id": null,
+              "actual_resolved_grams": null
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "case_id": "tr_boiled_broccoli_explicit_grams",
+      "category": "direct_auto_resolvable",
+      "locale": "tr-TR",
+      "outcome": "failed",
+      "turns": [
+        {
+          "turn_index": 0,
+          "outcome": "failed",
+          "actual_purpose": "meal_logging",
+          "actual_state": "clarification_required",
+          "actual_active_item_index": 0,
+          "assertion_failures": [
+            "state_mismatch",
+            "clarification_kind_mismatch",
+            "active_item_mismatch",
+            "food_id_mismatch",
+            "amount_mismatch"
+          ],
+          "attempts": 1,
+          "items": [
+            {
+              "item_index": 0,
+              "actual_food_id": null,
+              "actual_resolved_grams": null
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "case_id": "tr_low_fat_cream_cheese_missing_amount",
+      "category": "amount_clarification",
+      "locale": "tr-TR",
+      "outcome": "passed",
+      "turns": [
+        {
+          "turn_index": 0,
+          "outcome": "passed",
+          "actual_purpose": "meal_logging",
+          "actual_state": "clarification_required",
+          "actual_active_item_index": 0,
+          "assertion_failures": [],
+          "attempts": 1,
+          "items": [
+            {
+              "item_index": 0,
+              "actual_food_id": 461916,
+              "actual_resolved_grams": null
+            }
+          ]
+        },
+        {
+          "turn_index": 1,
+          "outcome": "passed",
+          "actual_purpose": "meal_logging",
+          "actual_state": "ready",
+          "actual_active_item_index": null,
+          "assertion_failures": [],
+          "attempts": 1,
+          "items": [
+            {
+              "item_index": 0,
+              "actual_food_id": 461916,
+              "actual_resolved_grams": 150
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "case_id": "tr_almonds_missing_amount_then_grams",
+      "category": "amount_clarification",
+      "locale": "tr-TR",
+      "outcome": "failed",
+      "turns": [
+        {
+          "turn_index": 0,
+          "outcome": "failed",
+          "actual_purpose": "meal_logging",
+          "actual_state": "clarification_required",
+          "actual_active_item_index": 0,
+          "assertion_failures": [
+            "clarification_kind_mismatch",
+            "food_id_mismatch"
+          ],
+          "attempts": 1,
+          "items": [
+            {
+              "item_index": 0,
+              "actual_food_id": null,
+              "actual_resolved_grams": null
+            }
+          ]
+        },
+        {
+          "turn_index": 1,
+          "outcome": "failed",
+          "actual_purpose": "meal_logging",
+          "actual_state": "clarification_required",
+          "actual_active_item_index": 0,
+          "assertion_failures": [
+            "state_mismatch",
+            "clarification_kind_mismatch",
+            "active_item_mismatch",
+            "food_id_mismatch",
+            "amount_mismatch"
+          ],
+          "attempts": 1,
+          "items": [
+            {
+              "item_index": 0,
+              "actual_food_id": null,
+              "actual_resolved_grams": null
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "case_id": "tr_whole_milk_missing_amount",
+      "category": "amount_clarification",
+      "locale": "tr-TR",
+      "outcome": "failed",
+      "turns": [
+        {
+          "turn_index": 0,
+          "outcome": "failed",
+          "actual_purpose": "meal_logging",
+          "actual_state": "clarification_required",
+          "actual_active_item_index": 0,
+          "assertion_failures": [
+            "clarification_kind_mismatch",
+            "food_id_mismatch"
+          ],
+          "attempts": 1,
+          "items": [
+            {
+              "item_index": 0,
+              "actual_food_id": null,
+              "actual_resolved_grams": null
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "case_id": "tr_plain_low_fat_yogurt_missing_amount",
+      "category": "amount_clarification",
+      "locale": "tr-TR",
+      "outcome": "failed",
+      "turns": [
+        {
+          "turn_index": 0,
+          "outcome": "failed",
+          "actual_purpose": "meal_logging",
+          "actual_state": "clarification_required",
+          "actual_active_item_index": 0,
+          "assertion_failures": [
+            "clarification_kind_mismatch",
+            "food_id_mismatch"
+          ],
+          "attempts": 1,
+          "items": [
+            {
+              "item_index": 0,
+              "actual_food_id": null,
+              "actual_resolved_grams": null
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "case_id": "tr_white_bread_missing_amount",
+      "category": "amount_clarification",
+      "locale": "tr-TR",
+      "outcome": "failed",
+      "turns": [
+        {
+          "turn_index": 0,
+          "outcome": "failed",
+          "actual_purpose": "meal_logging",
+          "actual_state": "clarification_required",
+          "actual_active_item_index": 0,
+          "assertion_failures": [
+            "clarification_kind_mismatch",
+            "food_id_mismatch"
+          ],
+          "attempts": 1,
+          "items": [
+            {
+              "item_index": 0,
+              "actual_food_id": null,
+              "actual_resolved_grams": null
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "case_id": "tr_broad_cheese_rephrased_specific",
+      "category": "food_identity_ambiguity",
+      "locale": "tr-TR",
+      "outcome": "passed",
+      "turns": [
+        {
+          "turn_index": 0,
+          "outcome": "passed",
+          "actual_purpose": "meal_logging",
+          "actual_state": "clarification_required",
+          "actual_active_item_index": 0,
+          "assertion_failures": [],
+          "attempts": 1,
+          "items": [
+            {
+              "item_index": 0,
+              "actual_food_id": null,
+              "actual_resolved_grams": null
+            }
+          ]
+        },
+        {
+          "turn_index": 1,
+          "outcome": "passed",
+          "actual_purpose": "meal_logging",
+          "actual_state": "ready",
+          "actual_active_item_index": null,
+          "assertion_failures": [],
+          "attempts": 1,
+          "items": [
+            {
+              "item_index": 0,
+              "actual_food_id": 461916,
+              "actual_resolved_grams": 100
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "case_id": "tr_broad_milk_identity",
+      "category": "food_identity_ambiguity",
+      "locale": "tr-TR",
+      "outcome": "passed",
+      "turns": [
+        {
+          "turn_index": 0,
+          "outcome": "passed",
+          "actual_purpose": "meal_logging",
+          "actual_state": "clarification_required",
+          "actual_active_item_index": 0,
+          "assertion_failures": [],
+          "attempts": 1,
+          "items": [
+            {
+              "item_index": 0,
+              "actual_food_id": null,
+              "actual_resolved_grams": null
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "case_id": "tr_broad_rice_identity",
+      "category": "food_identity_ambiguity",
+      "locale": "tr-TR",
+      "outcome": "passed",
+      "turns": [
+        {
+          "turn_index": 0,
+          "outcome": "passed",
+          "actual_purpose": "meal_logging",
+          "actual_state": "clarification_required",
+          "actual_active_item_index": 0,
+          "assertion_failures": [],
+          "attempts": 1,
+          "items": [
+            {
+              "item_index": 0,
+              "actual_food_id": null,
+              "actual_resolved_grams": null
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "case_id": "tr_broad_chicken_identity",
+      "category": "food_identity_ambiguity",
+      "locale": "tr-TR",
+      "outcome": "passed",
+      "turns": [
+        {
+          "turn_index": 0,
+          "outcome": "passed",
+          "actual_purpose": "meal_logging",
+          "actual_state": "clarification_required",
+          "actual_active_item_index": 0,
+          "assertion_failures": [],
+          "attempts": 1,
+          "items": [
+            {
+              "item_index": 0,
+              "actual_food_id": null,
+              "actual_resolved_grams": null
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "case_id": "tr_unsupported_galaxy_fruit",
+      "category": "food_identity_ambiguity",
+      "locale": "tr-TR",
+      "outcome": "passed",
+      "turns": [
+        {
+          "turn_index": 0,
+          "outcome": "passed",
+          "actual_purpose": "meal_logging",
+          "actual_state": "clarification_required",
+          "actual_active_item_index": 0,
+          "assertion_failures": [],
+          "attempts": 1,
+          "items": [
+            {
+              "item_index": 0,
+              "actual_food_id": null,
+              "actual_resolved_grams": null
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "case_id": "tr_fat_free_cream_cheese_specific",
+      "category": "identity_specificity",
+      "locale": "tr-TR",
+      "outcome": "passed",
+      "turns": [
+        {
+          "turn_index": 0,
+          "outcome": "passed",
+          "actual_purpose": "meal_logging",
+          "actual_state": "ready",
+          "actual_active_item_index": null,
+          "assertion_failures": [],
+          "attempts": 1,
+          "items": [
+            {
+              "item_index": 0,
+              "actual_food_id": 465044,
+              "actual_resolved_grams": 100
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "case_id": "tr_standard_cream_cheese_specific",
+      "category": "identity_specificity",
+      "locale": "tr-TR",
+      "outcome": "passed",
+      "turns": [
+        {
+          "turn_index": 0,
+          "outcome": "passed",
+          "actual_purpose": "meal_logging",
+          "actual_state": "ready",
+          "actual_active_item_index": null,
+          "assertion_failures": [],
+          "attempts": 1,
+          "items": [
+            {
+              "item_index": 0,
+              "actual_food_id": 466255,
+              "actual_resolved_grams": 100
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "case_id": "tr_raw_whole_egg_specific",
+      "category": "identity_specificity",
+      "locale": "tr-TR",
+      "outcome": "failed",
+      "turns": [
+        {
+          "turn_index": 0,
+          "outcome": "failed",
+          "actual_purpose": "meal_logging",
+          "actual_state": "clarification_required",
+          "actual_active_item_index": 0,
+          "assertion_failures": [
+            "state_mismatch",
+            "clarification_kind_mismatch",
+            "active_item_mismatch",
+            "food_id_mismatch",
+            "amount_mismatch"
+          ],
+          "attempts": 1,
+          "items": [
+            {
+              "item_index": 0,
+              "actual_food_id": null,
+              "actual_resolved_grams": null
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "case_id": "tr_fried_whole_egg_specific",
+      "category": "identity_specificity",
+      "locale": "tr-TR",
+      "outcome": "passed",
+      "turns": [
+        {
+          "turn_index": 0,
+          "outcome": "passed",
+          "actual_purpose": "meal_logging",
+          "actual_state": "ready",
+          "actual_active_item_index": null,
+          "assertion_failures": [],
+          "attempts": 1,
+          "items": [
+            {
+              "item_index": 0,
+              "actual_food_id": 466260,
+              "actual_resolved_grams": 80
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "case_id": "en_chobani_specific_milk_product",
+      "category": "identity_specificity",
+      "locale": "en-US",
+      "outcome": "passed",
+      "turns": [
+        {
+          "turn_index": 0,
+          "outcome": "passed",
+          "actual_purpose": "meal_logging",
+          "actual_state": "ready",
+          "actual_active_item_index": null,
+          "assertion_failures": [],
+          "attempts": 1,
+          "items": [
+            {
+              "item_index": 0,
+              "actual_food_id": 400730,
+              "actual_resolved_grams": 100
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "case_id": "tr_multi_food_all_ready",
+      "category": "multi_food",
+      "locale": "tr-TR",
+      "outcome": "failed",
+      "turns": [
+        {
+          "turn_index": 0,
+          "outcome": "failed",
+          "actual_purpose": "meal_logging",
+          "actual_state": "clarification_required",
+          "actual_active_item_index": 0,
+          "assertion_failures": [
+            "state_mismatch",
+            "clarification_kind_mismatch",
+            "active_item_mismatch",
+            "food_id_mismatch",
+            "amount_mismatch"
+          ],
+          "attempts": 1,
+          "items": [
+            {
+              "item_index": 0,
+              "actual_food_id": null,
+              "actual_resolved_grams": null
+            },
+            {
+              "item_index": 1,
+              "actual_food_id": null,
+              "actual_resolved_grams": null
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "case_id": "tr_multi_food_second_needs_amount",
+      "category": "multi_food",
+      "locale": "tr-TR",
+      "outcome": "failed",
+      "turns": [
+        {
+          "turn_index": 0,
+          "outcome": "failed",
+          "actual_purpose": "meal_logging",
+          "actual_state": "clarification_required",
+          "actual_active_item_index": 0,
+          "assertion_failures": [
+            "clarification_kind_mismatch",
+            "active_item_mismatch",
+            "food_id_mismatch",
+            "amount_mismatch"
+          ],
+          "attempts": 1,
+          "items": [
+            {
+              "item_index": 0,
+              "actual_food_id": null,
+              "actual_resolved_grams": null
+            },
+            {
+              "item_index": 1,
+              "actual_food_id": 461916,
+              "actual_resolved_grams": null
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "case_id": "tr_multi_food_first_amount_then_ready",
+      "category": "multi_food",
+      "locale": "tr-TR",
+      "outcome": "failed",
+      "turns": [
+        {
+          "turn_index": 0,
+          "outcome": "failed",
+          "actual_purpose": "meal_logging",
+          "actual_state": "clarification_required",
+          "actual_active_item_index": 0,
+          "assertion_failures": [
+            "clarification_kind_mismatch",
+            "food_id_mismatch",
+            "amount_mismatch"
+          ],
+          "attempts": 1,
+          "items": [
+            {
+              "item_index": 0,
+              "actual_food_id": null,
+              "actual_resolved_grams": null
+            },
+            {
+              "item_index": 1,
+              "actual_food_id": null,
+              "actual_resolved_grams": null
+            }
+          ]
+        },
+        {
+          "turn_index": 1,
+          "outcome": "failed",
+          "actual_purpose": "meal_logging",
+          "actual_state": "clarification_required",
+          "actual_active_item_index": 0,
+          "assertion_failures": [
+            "state_mismatch",
+            "clarification_kind_mismatch",
+            "active_item_mismatch",
+            "amount_mismatch",
+            "food_id_mismatch"
+          ],
+          "attempts": 1,
+          "items": [
+            {
+              "item_index": 0,
+              "actual_food_id": 463404,
+              "actual_resolved_grams": null
+            },
+            {
+              "item_index": 1,
+              "actual_food_id": null,
+              "actual_resolved_grams": null
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "case_id": "tr_ascii_low_fat_cream_cheese",
+      "category": "noise_typo_language",
+      "locale": "tr-TR",
+      "outcome": "passed",
+      "turns": [
+        {
+          "turn_index": 0,
+          "outcome": "passed",
+          "actual_purpose": "meal_logging",
+          "actual_state": "ready",
+          "actual_active_item_index": null,
+          "assertion_failures": [],
+          "attempts": 1,
+          "items": [
+            {
+              "item_index": 0,
+              "actual_food_id": 461916,
+              "actual_resolved_grams": 150
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "case_id": "tr_almonds_mild_typo",
+      "category": "noise_typo_language",
+      "locale": "tr-TR",
+      "outcome": "failed",
+      "turns": [
+        {
+          "turn_index": 0,
+          "outcome": "failed",
+          "actual_purpose": "meal_logging",
+          "actual_state": "clarification_required",
+          "actual_active_item_index": 0,
+          "assertion_failures": [
+            "state_mismatch",
+            "clarification_kind_mismatch",
+            "active_item_mismatch",
+            "food_id_mismatch",
+            "amount_mismatch"
+          ],
+          "attempts": 1,
+          "items": [
+            {
+              "item_index": 0,
+              "actual_food_id": null,
+              "actual_resolved_grams": null
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "case_id": "tr_whole_wheat_bread_natural_filler",
+      "category": "noise_typo_language",
+      "locale": "tr-TR",
+      "outcome": "failed",
+      "turns": [
+        {
+          "turn_index": 0,
+          "outcome": "failed",
+          "actual_purpose": "meal_logging",
+          "actual_state": "clarification_required",
+          "actual_active_item_index": 0,
+          "assertion_failures": [
+            "state_mismatch",
+            "clarification_kind_mismatch",
+            "active_item_mismatch",
+            "food_id_mismatch",
+            "amount_mismatch"
+          ],
+          "attempts": 1,
+          "items": [
+            {
+              "item_index": 0,
+              "actual_food_id": null,
+              "actual_resolved_grams": null
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "case_id": "tr_unknown_weather",
+      "category": "unknown_non_food",
+      "locale": "tr-TR",
+      "outcome": "passed",
+      "turns": [
+        {
+          "turn_index": 0,
+          "outcome": "passed",
+          "actual_purpose": "unknown",
+          "actual_state": "empty",
+          "actual_active_item_index": null,
+          "assertion_failures": [],
+          "attempts": 1
+        }
+      ]
+    },
+    {
+      "case_id": "tr_unknown_calendar_request",
+      "category": "unknown_non_food",
+      "locale": "tr-TR",
+      "outcome": "passed",
+      "turns": [
+        {
+          "turn_index": 0,
+          "outcome": "passed",
+          "actual_purpose": "unknown",
+          "actual_state": "empty",
+          "actual_active_item_index": null,
+          "assertion_failures": [],
+          "attempts": 1
+        }
+      ]
+    }
+  ]
+}

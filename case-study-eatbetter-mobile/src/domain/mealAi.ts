@@ -203,3 +203,82 @@ export type ResolveMealSelectionInput = {
   intent: MealAiIntent;
   choice: MealAiResolveChoice;
 };
+
+export type MealAiChatPurpose = 'meal_logging' | 'nutrition_query' | 'unknown';
+
+export type MealAiChatAssistantKind =
+  | 'nutrition_answer'
+  | 'meal_ready'
+  | 'clarification'
+  | 'guidance';
+
+export type MealAiChatAssistant = {
+  kind: MealAiChatAssistantKind;
+  text: string;
+};
+
+export type MealAiChatGramsChoice = {
+  kind: 'grams';
+  grams: number;
+};
+
+export type MealAiChatPortionChoice = {
+  kind: 'portion';
+  portionId: number;
+  quantity: number;
+};
+
+export type MealAiChatAmountChoice = MealAiChatGramsChoice | MealAiChatPortionChoice;
+
+export type MealAiChatConversationItem = {
+  position: number;
+  evidence: string;
+  amountEvidence: string | null;
+  intent: MealAiIntent;
+  foodChoiceId: number | null;
+  amountChoice: MealAiChatAmountChoice | null;
+};
+
+export type MealAiChatConversationState = {
+  version: 2;
+  purpose: MealAiChatPurpose;
+  items: MealAiChatConversationItem[];
+  activeItemIndex: number | null;
+};
+
+type MealAiChatResultBase = {
+  purpose: MealAiChatPurpose;
+  assistant: MealAiChatAssistant;
+  nextState: MealAiChatConversationState;
+};
+
+export type ReadyMealAiChatResult = MealAiChatResultBase & {
+  purpose: 'meal_logging' | 'nutrition_query';
+  state: 'ready';
+  items: ReadyMealAiItem[];
+  activeItemIndex: null;
+};
+
+export type ClarificationRequiredMealAiChatResult = MealAiChatResultBase & {
+  purpose: 'meal_logging' | 'nutrition_query';
+  state: 'clarification_required';
+  items: MealAiItem[];
+  activeItemIndex: number;
+};
+
+export type EmptyMealAiChatResult = MealAiChatResultBase & {
+  state: 'empty';
+  items: [];
+  activeItemIndex: null;
+};
+
+export type MealAiChatResult =
+  | ReadyMealAiChatResult
+  | ClarificationRequiredMealAiChatResult
+  | EmptyMealAiChatResult;
+
+export type SendMealAiChatMessageInput = {
+  message: string;
+  locale: string;
+  state: MealAiChatConversationState | null;
+};

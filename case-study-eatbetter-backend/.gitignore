@@ -5,3 +5,6 @@
 /coverage.out
 
 docs/
+!docs/
+docs/*
+!docs/phase15-ai-accuracy-evaluation-spec.md

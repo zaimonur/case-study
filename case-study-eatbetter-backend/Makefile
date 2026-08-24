@@ -1,4 +1,4 @@
-.PHONY: up down logs build build-importer build-localizer build-search-evaluator build-ai-smoke ai-smoke test vet verify migrate-up migrate-down
+.PHONY: up down logs build build-importer build-localizer build-search-evaluator build-ai-smoke ai-smoke build-ai-chat-smoke ai-chat-smoke test vet verify migrate-up migrate-down
 
 up:
 	docker compose up --build
@@ -27,13 +27,19 @@ build-ai-smoke:
 ai-smoke: build-ai-smoke
 	./bin/meal-ai-smoke
 
+build-ai-chat-smoke:
+	go build -o ./bin/meal-ai-chat-smoke ./cmd/meal-ai-chat-smoke
+
+ai-chat-smoke: build-ai-chat-smoke
+	./bin/meal-ai-chat-smoke $(AI_CHAT_SMOKE_ARGS)
+
 test:
 	go test -race ./...
 
 vet:
 	go vet ./...
 
-verify: test vet build build-importer build-localizer build-search-evaluator build-ai-smoke
+verify: test vet build build-importer build-localizer build-search-evaluator build-ai-smoke build-ai-chat-smoke
 
 migrate-up:
 	docker compose run --rm migrate up

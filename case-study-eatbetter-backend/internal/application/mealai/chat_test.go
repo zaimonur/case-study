@@ -2,6 +2,8 @@ package mealai
 
 import (
 	"context"
+	"errors"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -166,6 +168,47 @@ func TestChatAmountContinuationReplaysThenUsesResolveSelection(t *testing.T) {
 	}
 	if len(calculator.requests) != 1 || calculator.requests[0].FoodID != foodID || calculator.requests[0].Grams == nil || *calculator.requests[0].Grams != grams {
 		t.Fatalf("calculator requests = %#v", calculator.requests)
+	}
+}
+
+func TestChatFailedContinuationDoesNotMutateCommittedState(t *testing.T) {
+	const foodID = int64(42)
+	intent := foodintent.FoodIntent{Query: "az yağlı krem peynir"}
+	grams := 150.0
+	chat := &fakeChatInterpreter{
+		initial: mealchat.InitialInterpretation{Purpose: mealchat.PurposeMealLogging, Items: []mealchat.InitialItem{{
+			Evidence: "Az yağlı krem peynir", Intent: intent,
+		}}},
+		decisions: []mealchat.ContinuationDecision{{Kind: mealchat.ContinuationGrams, Grams: &grams}},
+	}
+	resolver := &fakeFoodResolver{results: []foodresolver.Resolution{
+		resolvedIdentity(foodID, "Az yağlı krem peynir", "Low fat cream cheese", nil),
+		resolvedIdentity(foodID, "Az yağlı krem peynir", "Low fat cream cheese", nil),
+	}}
+	clarification := foodamount.Resolution{
+		State: foodamount.StateClarificationRequired, Reason: foodamount.ReasonQuantityRequired,
+		Clarification: &foodamount.Clarification{Portions: []food.Portion{}, AllowDirectGrams: true},
+	}
+	amount := &fakeAmountResolver{results: []foodamount.Resolution{clarification, clarification}}
+	service := NewService(
+		&fakeTextExtractor{}, nil, resolver, amount,
+		&fakeFoodDetailer{err: errors.New("detail unavailable")}, &fakeNutritionCalculator{}, chat,
+	)
+
+	initial, err := service.Chat(context.Background(), ChatRequest{Message: "Az yağlı krem peynir yedim.", Locale: "tr"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	committed := cloneConversationState(initial.NextState)
+	failed, err := service.Chat(context.Background(), ChatRequest{Message: "150 g", Locale: "tr", State: &initial.NextState})
+	if err == nil {
+		t.Fatal("failed continuation unexpectedly succeeded")
+	}
+	if failed.Purpose != "" || failed.State != "" || failed.Items != nil || failed.NextState.Version != 0 {
+		t.Fatalf("partial failed result = %#v", failed)
+	}
+	if !reflect.DeepEqual(initial.NextState, committed) {
+		t.Fatalf("committed state mutated: got %#v, want %#v", initial.NextState, committed)
 	}
 }
 

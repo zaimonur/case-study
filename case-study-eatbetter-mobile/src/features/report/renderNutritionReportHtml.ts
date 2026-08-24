@@ -15,6 +15,7 @@ import {
   formatReportDateTime,
   formatReportDateWithWeekday,
   formatReportNumber,
+  formatReportSelectionNumber,
   formatReportTime,
 } from './reportFormatting';
 
@@ -82,7 +83,7 @@ function renderDailySummary(days: readonly NutritionReportDay[]): string {
 
 function formatSelection(item: NutritionReportItem): string {
   if (item.selection.kind === 'grams') {
-    return `${formatReportNumber(item.selection.grams)} g`;
+    return `${formatReportSelectionNumber(item.selection.grams)} g`;
   }
 
   const amountAndMeasure = formatPortionAmountAndMeasure(
@@ -92,7 +93,7 @@ function formatSelection(item: NutritionReportItem): string {
 
   return item.selection.quantity === 1
     ? amountAndMeasure
-    : `${formatReportNumber(item.selection.quantity)} × ${amountAndMeasure}`;
+    : `${formatReportSelectionNumber(item.selection.quantity)} × ${amountAndMeasure}`;
 }
 
 function renderItem(item: NutritionReportItem): string {
@@ -157,7 +158,7 @@ export function renderNutritionReportHtml(report: NutritionReport): string {
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>EatBetter Beslenme Raporu</title>
   <style>
-    @page { margin: 16mm 14mm 18mm; }
+    @page { size: A4 portrait; margin: 16mm 14mm 18mm; }
     * { box-sizing: border-box; }
     body {
       margin: 0;
@@ -217,12 +218,16 @@ export function renderNutritionReportHtml(report: NutritionReport): string {
     .detail-day { margin: 0 0 18px; }
     .detail-day > h3 { padding-bottom: 6px; border-bottom: 1px solid #a9c9bb; }
     .meal-block {
-      break-inside: avoid;
       margin-top: 10px;
       border-left: 3px solid #43a37e;
       padding: 4px 0 3px 11px;
     }
-    .food-item { padding: 9px 0; border-top: 1px solid #e3ebe7; }
+    .meal-block > h4 { break-after: avoid; }
+    .food-item {
+      break-inside: avoid;
+      padding: 9px 0;
+      border-top: 1px solid #e3ebe7;
+    }
     .food-item:first-of-type { border-top: 0; }
     .food-title-wrap { min-width: 0; }
     .food-name { font-weight: 700; }

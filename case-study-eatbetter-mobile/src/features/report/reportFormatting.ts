@@ -35,6 +35,11 @@ const reportNumberFormatter = new Intl.NumberFormat('tr-TR', {
   maximumFractionDigits: 1,
 });
 
+const reportSelectionNumberFormatter = new Intl.NumberFormat('tr-TR', {
+  maximumSignificantDigits: 15,
+  useGrouping: false,
+});
+
 export function escapeHtml(value: string): string {
   return value.replace(/[&<>"']/g, (character) => {
     switch (character) {
@@ -56,6 +61,10 @@ export function escapeHtml(value: string): string {
 
 export function formatReportNumber(value: number): string {
   return reportNumberFormatter.format(value);
+}
+
+export function formatReportSelectionNumber(value: number): string {
+  return reportSelectionNumberFormatter.format(value);
 }
 
 export function formatReportDate(date: ReportLocalDate): string {

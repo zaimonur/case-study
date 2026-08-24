@@ -1,4 +1,4 @@
-import { File, Paths } from 'expo-file-system';
+import { File } from 'expo-file-system';
 import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
 
@@ -26,26 +26,6 @@ export class NutritionReportExportError extends Error {
   constructor(public readonly code: NutritionReportExportErrorCode) {
     super(ERROR_MESSAGES[code]);
     this.name = 'NutritionReportExportError';
-  }
-}
-
-function isAppCacheFileUri(uri: unknown): uri is string {
-  if (
-    typeof uri !== 'string' ||
-    uri.trim() === '' ||
-    !uri.startsWith('file://')
-  ) {
-    return false;
-  }
-
-  try {
-    const cacheUri = Paths.cache.uri.endsWith('/')
-      ? Paths.cache.uri
-      : `${Paths.cache.uri}/`;
-
-    return uri.startsWith(cacheUri);
-  } catch {
-    return false;
   }
 }
 
@@ -108,10 +88,6 @@ export async function exportSevenDayNutritionReportPdf(
       throw new NutritionReportExportError('pdf_generation_failed');
     }
 
-    if (!isAppCacheFileUri(result.uri)) {
-      throw new NutritionReportExportError('invalid_generated_pdf');
-    }
-
     try {
       generatedPdf = new File(result.uri);
     } catch {
@@ -129,8 +105,11 @@ export async function exportSevenDayNutritionReportPdf(
 
     try {
       const fileSize = generatedPdf.size;
+
       isValidFile =
-        generatedPdf.exists && Number.isFinite(fileSize) && fileSize > 0;
+        generatedPdf.exists &&
+        Number.isFinite(fileSize) &&
+        fileSize > 0;
     } catch {
       throw new NutritionReportExportError('invalid_generated_pdf');
     }

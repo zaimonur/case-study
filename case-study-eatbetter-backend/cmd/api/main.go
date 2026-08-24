@@ -20,6 +20,7 @@ import (
 	"github.com/zaimonur/case-study/case-study-eatbetter-backend/internal/application/foodresolver"
 	"github.com/zaimonur/case-study/case-study-eatbetter-backend/internal/application/foodsearch"
 	"github.com/zaimonur/case-study/case-study-eatbetter-backend/internal/application/mealai"
+	"github.com/zaimonur/case-study/case-study-eatbetter-backend/internal/application/mealchat"
 	"github.com/zaimonur/case-study/case-study-eatbetter-backend/internal/application/nutritioncalc"
 	"github.com/zaimonur/case-study/case-study-eatbetter-backend/internal/config"
 	"github.com/zaimonur/case-study/case-study-eatbetter-backend/internal/httpapi"
@@ -64,13 +65,17 @@ func run() error {
 	foodResolverService := foodresolver.NewService(foodSearchService)
 	foodAmountService := foodamount.NewService(foodDetailService)
 	var textExtractor foodextraction.Extractor
+	var chatInterpreter mealchat.Interpreter
 	if strings.TrimSpace(cfg.Groq.APIKey) != "" {
-		textExtractor, err = groq.NewExtractor(cfg.Groq)
+		groqExtractor, err := groq.NewExtractor(cfg.Groq)
 		if err != nil {
 			return fmt.Errorf("construct Groq text extractor: %w", err)
 		}
+		textExtractor = groqExtractor
+		chatInterpreter = groqExtractor
 	}
 	extractionService := foodextraction.NewService(textExtractor)
+	chatInterpretationService := mealchat.NewService(chatInterpreter)
 	var imageExtractor foodimageextraction.Extractor
 	if strings.TrimSpace(cfg.Gemini.APIKey) != "" {
 		imageExtractor, err = gemini.NewExtractor(cfg.Gemini)
@@ -82,10 +87,11 @@ func run() error {
 	mealAIService := mealai.NewService(
 		extractionService, imageExtractionService,
 		foodResolverService, foodAmountService, foodDetailService, nutritionService,
+		chatInterpretationService,
 	)
 	handler := httpapi.NewRouter(
 		logger, cfg.Database.PingTimeout, pool.Ping,
-		foodSearchService, foodDetailService, nutritionService, mealAIService,
+		foodSearchService, foodDetailService, nutritionService, mealAIService, mealAIService,
 	)
 	server := httpapi.NewServer(cfg.HTTP, handler)
 	serverErrors := make(chan error, 1)

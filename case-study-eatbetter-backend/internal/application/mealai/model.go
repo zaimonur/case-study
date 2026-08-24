@@ -10,6 +10,7 @@ import (
 	"github.com/zaimonur/case-study/case-study-eatbetter-backend/internal/application/foodimageextraction"
 	"github.com/zaimonur/case-study/case-study-eatbetter-backend/internal/application/foodintent"
 	"github.com/zaimonur/case-study/case-study-eatbetter-backend/internal/application/foodresolver"
+	"github.com/zaimonur/case-study/case-study-eatbetter-backend/internal/application/mealchat"
 	"github.com/zaimonur/case-study/case-study-eatbetter-backend/internal/application/nutritioncalc"
 	"github.com/zaimonur/case-study/case-study-eatbetter-backend/internal/domain/food"
 )
@@ -145,6 +146,58 @@ type FoodDetailer interface {
 // NutritionCalculator is the deterministic nutrition boundary.
 type NutritionCalculator interface {
 	Calculate(context.Context, nutritioncalc.Request) (nutritioncalc.Result, error)
+}
+
+// ChatInterpreter is the provider-independent conversational language boundary.
+// It may interpret evidence and constrained choices, but never canonical food
+// identity or nutrition truth.
+type ChatInterpreter interface {
+	InterpretInitial(context.Context, string) (mealchat.InitialInterpretation, error)
+	InterpretContinuation(context.Context, mealchat.ContinuationRequest) (mealchat.ContinuationDecision, error)
+}
+
+// ChatPurpose is the product purpose of a chat conversation.
+type ChatPurpose = mealchat.Purpose
+
+const (
+	ChatPurposeMealLogging    = mealchat.PurposeMealLogging
+	ChatPurposeNutritionQuery = mealchat.PurposeNutritionQuery
+	ChatPurposeUnknown        = mealchat.PurposeUnknown
+	ConversationVersion       = 1
+)
+
+// ChatRequest is one stateless conversational round trip.
+type ChatRequest struct {
+	Message string
+	Locale  string
+	State   *ConversationState
+}
+
+// ChatResult combines a trusted materialized view with replayable next state.
+type ChatResult struct {
+	Purpose         ChatPurpose
+	State           State
+	Items           []Item
+	ActiveItemIndex *int
+	NextState       ConversationState
+}
+
+// ConversationState carries bounded evidence and explicit prior choices only.
+// It intentionally excludes food snapshots, selections, and nutrition previews.
+type ConversationState struct {
+	Version         int
+	Purpose         ChatPurpose
+	Items           []ConversationItemState
+	ActiveItemIndex *int
+}
+
+// ConversationItemState is sufficient to replay one source-ordered item.
+type ConversationItemState struct {
+	Position     int
+	Evidence     string
+	Intent       foodintent.FoodIntent
+	FoodChoiceID *int64
+	AmountChoice *ExplicitChoice
 }
 
 // ExplicitChoiceKind identifies the explicit continuation action selected by the client.

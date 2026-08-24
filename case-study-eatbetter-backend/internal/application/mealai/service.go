@@ -16,6 +16,7 @@ import (
 	"github.com/zaimonur/case-study/case-study-eatbetter-backend/internal/application/foodlocale"
 	"github.com/zaimonur/case-study/case-study-eatbetter-backend/internal/application/foodresolver"
 	"github.com/zaimonur/case-study/case-study-eatbetter-backend/internal/application/foodsearch"
+	"github.com/zaimonur/case-study/case-study-eatbetter-backend/internal/application/mealchat"
 	"github.com/zaimonur/case-study/case-study-eatbetter-backend/internal/application/nutritioncalc"
 	"github.com/zaimonur/case-study/case-study-eatbetter-backend/internal/domain/food"
 )
@@ -27,6 +28,7 @@ var (
 	_ AmountResolver      = (*foodamount.Service)(nil)
 	_ FoodDetailer        = (*fooddetail.Service)(nil)
 	_ NutritionCalculator = (*nutritioncalc.Service)(nil)
+	_ ChatInterpreter     = (*mealchat.Service)(nil)
 )
 
 // Service coordinates extraction, identity resolution, and amount resolution.
@@ -37,14 +39,19 @@ type Service struct {
 	amountResolver      AmountResolver
 	foodDetailer        FoodDetailer
 	nutritionCalculator NutritionCalculator
+	chatInterpreter     ChatInterpreter
 }
 
-func NewService(textExtractor TextExtractor, imageExtractor ImageExtractor, foodResolver FoodResolver, amountResolver AmountResolver, foodDetailer FoodDetailer, nutritionCalculator NutritionCalculator) *Service {
-	return &Service{
+func NewService(textExtractor TextExtractor, imageExtractor ImageExtractor, foodResolver FoodResolver, amountResolver AmountResolver, foodDetailer FoodDetailer, nutritionCalculator NutritionCalculator, chatInterpreters ...ChatInterpreter) *Service {
+	service := &Service{
 		textExtractor: textExtractor, imageExtractor: imageExtractor,
 		foodResolver: foodResolver, amountResolver: amountResolver,
 		foodDetailer: foodDetailer, nutritionCalculator: nutritionCalculator,
 	}
+	if len(chatInterpreters) > 0 {
+		service.chatInterpreter = chatInterpreters[0]
+	}
+	return service
 }
 
 // InterpretText returns a stable initial interpretation without persistence.

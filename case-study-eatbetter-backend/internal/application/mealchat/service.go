@@ -11,10 +11,15 @@ import (
 	"unicode/utf8"
 
 	"github.com/zaimonur/case-study/case-study-eatbetter-backend/internal/application/foodextraction"
+	"github.com/zaimonur/case-study/case-study-eatbetter-backend/internal/application/foodintent"
 	"github.com/zaimonur/case-study/case-study-eatbetter-backend/internal/domain/food"
 )
 
-var explicitNumberPattern = regexp.MustCompile(`(?i)(?:^|[^\pL\pN])([0-9]+(?:[.,][0-9]+)?)(?:\s*)(g|gr|gram|grams|gramdı|gramdi)(?:$|[^\pL\pN])`)
+var (
+	numericLiteralPattern   = regexp.MustCompile(`(?:^|[^\pL\pN])([0-9]+(?:[.,][0-9]+)?)`)
+	standaloneNumberPattern = regexp.MustCompile(`(?:^|[^\pL\pN])([0-9]+(?:[.,][0-9]+)?)(?:$|[^\pL])`)
+	measurementPattern      = regexp.MustCompile(`(?i)(?:^|[^\pL\pN])([0-9]+(?:[.,][0-9]+)?)\s*(kilogram|kg|mililitre|millilitre|milliliter|ml|gramdı|gramdi|grams|gram|gr|g|litre|liter|lt|l)(?:$|[^\pL])`)
+)
 
 // Service validates both sides of the external chat interpretation boundary.
 type Service struct{ interpreter Interpreter }
@@ -52,7 +57,7 @@ func (s *Service) InterpretContinuation(ctx context.Context, request Continuatio
 	if err != nil {
 		return ContinuationDecision{}, normalizeProviderError(err)
 	}
-	if err := validateDecision(request, decision); err != nil {
+	if err := validateDecision(request, &decision); err != nil {
 		return ContinuationDecision{}, NewError(ErrorInvalidProviderOutput, err)
 	}
 	return decision, nil
@@ -92,14 +97,11 @@ func validateInitial(source string, result *InitialInterpretation) error {
 		if err := validateIntent(item.Intent.Query, item.Intent.Quantity, item.Intent.UnitHint); err != nil {
 			return fmt.Errorf("items[%d]: %w", index, err)
 		}
-		if item.Intent.Quantity != nil && !explicitQuantityEvidence(item.Evidence, *item.Intent.Quantity) {
-			return fmt.Errorf("items[%d].intent.quantity has no exact source evidence", index)
+		if err := ValidateIntentEvidence(item.Evidence, item.Intent); err != nil {
+			return fmt.Errorf("items[%d]: %w", index, err)
 		}
 		if item.Intent.UnitHint != nil {
 			unit := canonicalUnitHint(*item.Intent.UnitHint)
-			if !explicitUnitEvidence(item.Evidence, unit, item.Intent.Quantity) {
-				return fmt.Errorf("items[%d].intent.unitHint has no exact source evidence", index)
-			}
 			item.Intent.UnitHint = &unit
 		}
 	}
@@ -121,6 +123,16 @@ func validateContinuationRequest(request ContinuationRequest) error {
 	}
 	if err := validateIntent(request.OriginalIntent.Query, request.OriginalIntent.Quantity, request.OriginalIntent.UnitHint); err != nil {
 		return err
+	}
+	if strings.TrimSpace(request.OriginalEvidence) != "" {
+		if !utf8.ValidString(request.OriginalEvidence) || utf8.RuneCountInString(request.OriginalEvidence) > MaxMessageRunes {
+			return fmt.Errorf("invalid original evidence")
+		}
+		if err := ValidateIntentEvidence(request.OriginalEvidence, request.OriginalIntent); err != nil {
+			return fmt.Errorf("original intent evidence: %w", err)
+		}
+	} else if request.OriginalIntent.Quantity != nil || request.OriginalIntent.UnitHint != nil {
+		return fmt.Errorf("original evidence is required for amount intent")
 	}
 	switch request.Kind {
 	case ClarificationFoodIdentity:
@@ -160,7 +172,7 @@ func validateContinuationRequest(request ContinuationRequest) error {
 	return nil
 }
 
-func validateDecision(request ContinuationRequest, decision ContinuationDecision) error {
+func validateDecision(request ContinuationRequest, decision *ContinuationDecision) error {
 	switch decision.Kind {
 	case ContinuationUnresolved:
 		if decision.FoodID != nil || decision.Grams != nil || decision.PortionID != nil || decision.Quantity != nil {
@@ -181,15 +193,23 @@ func validateDecision(request ContinuationRequest, decision ContinuationDecision
 			return fmt.Errorf("grams decision has no exact source evidence")
 		}
 	case ContinuationPortion:
-		if request.Kind != ClarificationAmount || decision.FoodID != nil || decision.Grams != nil || decision.PortionID == nil || decision.Quantity == nil || !finitePositive(*decision.Quantity) {
+		if request.Kind != ClarificationAmount || decision.FoodID != nil || decision.Grams != nil || decision.PortionID == nil || decision.Quantity != nil && !finitePositive(*decision.Quantity) {
 			return fmt.Errorf("malformed portion decision")
 		}
-		if !containsPortion(request.Portions, *decision.PortionID) {
+		portion := findPortion(request.Portions, *decision.PortionID)
+		if portion == nil {
 			return fmt.Errorf("portion is outside the allowed stored set")
 		}
-		if !explicitQuantityEvidence(request.Message, *decision.Quantity) {
-			return fmt.Errorf("portion quantity has no source evidence")
+		if !portionMeasureEvidence(request.Message, portion.Measure) {
+			*decision = ContinuationDecision{Kind: ContinuationUnresolved}
+			return nil
 		}
+		effectiveQuantity, ok := effectivePortionQuantity(request, decision.Quantity)
+		if !ok {
+			*decision = ContinuationDecision{Kind: ContinuationUnresolved}
+			return nil
+		}
+		decision.Quantity = &effectiveQuantity
 	default:
 		return fmt.Errorf("unknown continuation decision")
 	}
@@ -198,11 +218,14 @@ func validateDecision(request ContinuationRequest, decision ContinuationDecision
 
 // ValidateContinuationDecision applies the same allow-list and explicit
 // evidence checks at provider-adapter and application-service boundaries.
-func ValidateContinuationDecision(request ContinuationRequest, decision ContinuationDecision) error {
+func ValidateContinuationDecision(request ContinuationRequest, decision ContinuationDecision) (ContinuationDecision, error) {
 	if err := validateContinuationRequest(request); err != nil {
-		return err
+		return ContinuationDecision{}, err
 	}
-	return validateDecision(request, decision)
+	if err := validateDecision(request, &decision); err != nil {
+		return ContinuationDecision{}, err
+	}
+	return decision, nil
 }
 
 func validateIntent(query string, quantity *float64, unit *string) error {
@@ -220,64 +243,291 @@ func validateIntent(query string, quantity *float64, unit *string) error {
 }
 
 func explicitGramEvidence(message string, wanted float64) bool {
-	for _, match := range explicitNumberPattern.FindAllStringSubmatch(message, -1) {
-		value, err := strconv.ParseFloat(strings.ReplaceAll(match[1], ",", "."), 64)
-		if err == nil && nearlyEqual(value, wanted) {
-			return true
-		}
-	}
-	return false
+	return measurementEvidence(message, wanted, "g")
 }
 
-func explicitQuantityEvidence(message string, wanted float64) bool {
-	normalized := strings.ToLower(message)
-	if nearlyEqual(wanted, 1) && (containsWord(normalized, "bir") || containsWord(normalized, "one") || containsWord(normalized, "tek")) {
-		return true
-	}
-	if nearlyEqual(wanted, 0.5) && (containsWord(normalized, "yarım") || containsWord(normalized, "yarim") || containsWord(normalized, "half")) {
-		return true
-	}
-	numberPattern := regexp.MustCompile(`(?:^|[^\pL\pN])([0-9]+(?:[.,][0-9]+)?)(?:$|[^\pL\pN])`)
-	for _, match := range numberPattern.FindAllStringSubmatch(message, -1) {
-		value, err := strconv.ParseFloat(strings.ReplaceAll(match[1], ",", "."), 64)
-		if err == nil && nearlyEqual(value, wanted) {
-			return true
+// ValidateIntentEvidence proves that any quantity and unit in an intent came
+// from the item's original evidence. It is reused for initial output and
+// untrusted conversation-state replay.
+func ValidateIntentEvidence(evidence string, intent foodintent.FoodIntent) error {
+	if intent.Quantity == nil {
+		if intent.UnitHint != nil && !unitPhraseEvidence(evidence, canonicalUnitHint(*intent.UnitHint)) {
+			return fmt.Errorf("intent unit has no exact source evidence")
 		}
+		return nil
 	}
-	return false
-}
-
-func explicitUnitEvidence(evidence, unit string, quantity *float64) bool {
-	lower := strings.ToLower(evidence)
-	var words []string
+	quantity := *intent.Quantity
+	if !finitePositive(quantity) {
+		return fmt.Errorf("intent quantity must be finite and positive")
+	}
+	if intent.UnitHint == nil {
+		if !standaloneQuantityEvidence(evidence, quantity) {
+			return fmt.Errorf("intent quantity has no exact source evidence")
+		}
+		return nil
+	}
+	unit := canonicalUnitHint(*intent.UnitHint)
+	var supported bool
 	switch unit {
-	case "g":
-		words = []string{"g", "gr", "gram", "grams", "gramdı", "gramdi"}
-	case "kg":
-		words = []string{"kg", "kilogram"}
-	case "ml":
-		words = []string{"ml", "mililitre", "milliliter", "millilitre"}
-	case "l":
-		words = []string{"l", "lt", "litre", "liter"}
+	case "g", "kg", "ml", "l":
+		supported = measurementEvidence(evidence, quantity, unit)
 	case "adet":
-		words = []string{"adet", "tane"}
-		if quantity != nil && explicitQuantityEvidence(evidence, *quantity) {
+		supported = explicitCountEvidence(evidence, intent.Query, quantity)
+	default:
+		supported = quantityUnitPhraseEvidence(evidence, quantity, unit)
+	}
+	if !supported {
+		return fmt.Errorf("intent quantity/unit has no exact source evidence")
+	}
+	return nil
+}
+
+func measurementEvidence(evidence string, wanted float64, canonicalUnit string) bool {
+	for _, match := range measurementPattern.FindAllStringSubmatch(evidence, -1) {
+		value, ok := parseEvidenceNumber(match[1])
+		if ok && nearlyEqual(value, wanted) && canonicalUnitHint(match[2]) == canonicalUnit {
 			return true
 		}
+	}
+	return wordQuantityUnitPhraseEvidence(evidence, wanted, canonicalUnit)
+}
+
+func standaloneQuantityEvidence(evidence string, wanted float64) bool {
+	for _, match := range standaloneNumberPattern.FindAllStringSubmatch(evidence, -1) {
+		value, ok := parseEvidenceNumber(match[1])
+		if ok && nearlyEqual(value, wanted) {
+			return true
+		}
+	}
+	return wordQuantityEvidence(evidence, wanted)
+}
+
+func explicitCountEvidence(evidence, query string, wanted float64) bool {
+	if quantityUnitPhraseEvidence(evidence, wanted, "adet") || quantityUnitPhraseEvidence(evidence, wanted, "tane") {
+		return true
+	}
+	for _, explicitUnit := range []string{"g", "kg", "ml", "l", "dilim", "bardak", "yemek kaşığı", "çay kaşığı"} {
+		if quantityUnitPhraseEvidence(evidence, wanted, explicitUnit) {
+			return false
+		}
+	}
+	query = strings.TrimSpace(strings.ToLower(query))
+	if query == "" {
+		return false
+	}
+	pattern := regexp.MustCompile(`(?i)(?:^|[^\pL\pN])([0-9]+(?:[.,][0-9]+)?)\s*` + phraseExpression(query) + `(?:$|[^\pL\pN])`)
+	for _, match := range pattern.FindAllStringSubmatch(evidence, -1) {
+		value, ok := parseEvidenceNumber(match[1])
+		if ok && nearlyEqual(value, wanted) {
+			return true
+		}
+	}
+	return wordCountEvidence(evidence, query, wanted)
+}
+
+func wordCountEvidence(evidence, query string, wanted float64) bool {
+	var words []string
+	switch {
+	case nearlyEqual(wanted, 1):
+		words = []string{"bir", "tek", "one"}
+	case nearlyEqual(wanted, 0.5):
+		words = []string{"yarım", "yarim", "half"}
 	default:
-		words = []string{strings.ToLower(strings.TrimSpace(unit))}
+		return false
 	}
 	for _, word := range words {
-		if containsWord(lower, word) {
+		for _, following := range append([]string{query}, measureAliases("adet")...) {
+			pattern := regexp.MustCompile(`(?i)(?:^|[^\pL])` + phraseExpression(word) + `\s+` + phraseExpression(following) + `(?:$|[^\pL\pN])`)
+			if pattern.MatchString(evidence) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func quantityUnitPhraseEvidence(evidence string, wanted float64, unit string) bool {
+	aliases := measureAliases(unit)
+	for _, alias := range aliases {
+		pattern := regexp.MustCompile(`(?i)(?:^|[^\pL\pN])([0-9]+(?:[.,][0-9]+)?)\s*` + phraseExpression(alias) + `(?:$|[^\pL])`)
+		for _, match := range pattern.FindAllStringSubmatch(evidence, -1) {
+			value, ok := parseEvidenceNumber(match[1])
+			if ok && nearlyEqual(value, wanted) {
+				return true
+			}
+		}
+	}
+	return wordQuantityUnitPhraseEvidence(evidence, wanted, unit)
+}
+
+func wordQuantityUnitPhraseEvidence(evidence string, wanted float64, unit string) bool {
+	var words []string
+	switch {
+	case nearlyEqual(wanted, 1):
+		words = []string{"bir", "tek", "one"}
+	case nearlyEqual(wanted, 0.5):
+		words = []string{"yarım", "yarim", "half"}
+	default:
+		return false
+	}
+	for _, word := range words {
+		for _, alias := range measureAliases(unit) {
+			pattern := regexp.MustCompile(`(?i)(?:^|[^\pL])` + phraseExpression(word) + `\s+` + phraseExpression(alias) + `(?:$|[^\pL])`)
+			if pattern.MatchString(evidence) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func effectivePortionQuantity(request ContinuationRequest, providerQuantity *float64) (float64, bool) {
+	latest := explicitQuantities(request.Message)
+	if len(latest) > 1 {
+		return 0, false
+	}
+	if len(latest) == 1 {
+		if providerQuantity != nil && !nearlyEqual(*providerQuantity, latest[0]) {
+			return 0, false
+		}
+		return latest[0], true
+	}
+	if request.OriginalIntent.Quantity == nil || !reusableOriginalQuantity(request) {
+		return 0, false
+	}
+	original := *request.OriginalIntent.Quantity
+	if providerQuantity != nil && !nearlyEqual(*providerQuantity, original) {
+		return 0, false
+	}
+	return original, true
+}
+
+func reusableOriginalQuantity(request ContinuationRequest) bool {
+	if request.OriginalIntent.Quantity == nil || strings.TrimSpace(request.OriginalEvidence) == "" {
+		return false
+	}
+	if request.OriginalIntent.UnitHint != nil {
+		switch canonicalUnitHint(*request.OriginalIntent.UnitHint) {
+		case "g", "kg", "ml", "l":
+			return false
+		}
+	}
+	return ValidateIntentEvidence(request.OriginalEvidence, request.OriginalIntent) == nil
+}
+
+func explicitQuantities(evidence string) []float64 {
+	values := make([]float64, 0, 2)
+	for _, match := range numericLiteralPattern.FindAllStringSubmatch(evidence, -1) {
+		value, ok := parseEvidenceNumber(match[1])
+		if ok && finitePositive(value) {
+			values = appendDistinct(values, value)
+		}
+	}
+	for _, candidate := range []struct {
+		value float64
+		words []string
+	}{{1, []string{"bir", "tek", "one"}}, {0.5, []string{"yarım", "yarim", "half"}}} {
+		for _, word := range candidate.words {
+			if containsWord(strings.ToLower(evidence), word) {
+				values = appendDistinct(values, candidate.value)
+				break
+			}
+		}
+	}
+	return values
+}
+
+func wordQuantityEvidence(evidence string, wanted float64) bool {
+	for _, value := range explicitQuantities(evidence) {
+		if nearlyEqual(value, wanted) {
 			return true
 		}
 	}
 	return false
+}
+
+func appendDistinct(values []float64, candidate float64) []float64 {
+	for _, value := range values {
+		if nearlyEqual(value, candidate) {
+			return values
+		}
+	}
+	return append(values, candidate)
+}
+
+func parseEvidenceNumber(raw string) (float64, bool) {
+	value, err := strconv.ParseFloat(strings.ReplaceAll(raw, ",", "."), 64)
+	return value, err == nil && finitePositive(value)
+}
+
+func portionMeasureEvidence(message, measure string) bool {
+	for _, alias := range measureAliases(measure) {
+		if containsPhrase(message, alias) {
+			return true
+		}
+	}
+	return false
+}
+
+func unitPhraseEvidence(message, unit string) bool {
+	for _, alias := range measureAliases(unit) {
+		if containsPhrase(message, alias) {
+			return true
+		}
+	}
+	return false
+}
+
+func measureAliases(measure string) []string {
+	normalized := normalizePhrase(measure)
+	groups := [][]string{
+		{"g", "gr", "gram", "grams", "gramdı", "gramdi"},
+		{"kg", "kilogram"},
+		{"ml", "mililitre", "millilitre", "milliliter"},
+		{"l", "lt", "litre", "liter"},
+		{"adet", "tane", "taneydi", "adetti"},
+		{"dilim", "slice", "slices"},
+		{"bardak", "cup", "cups"},
+		{"yemek kaşığı", "yemek kasigi", "tablespoon", "tablespoons"},
+		{"çay kaşığı", "cay kasigi", "teaspoon", "teaspoons"},
+	}
+	for _, group := range groups {
+		for _, alias := range group {
+			if normalized == alias {
+				return group
+			}
+		}
+	}
+	if normalized == "" {
+		return nil
+	}
+	return []string{normalized}
+}
+
+func containsPhrase(text, phrase string) bool {
+	phrase = normalizePhrase(phrase)
+	if phrase == "" {
+		return false
+	}
+	pattern := regexp.MustCompile(`(?i)(?:^|[^\pL])` + phraseExpression(phrase) + `(?:$|[^\pL])`)
+	return pattern.MatchString(text)
+}
+
+func phraseExpression(phrase string) string {
+	parts := strings.Fields(normalizePhrase(phrase))
+	for index := range parts {
+		parts[index] = regexp.QuoteMeta(parts[index])
+	}
+	return strings.Join(parts, `\s+`)
+}
+
+func normalizePhrase(value string) string {
+	return strings.Join(strings.Fields(strings.ToLower(strings.TrimSpace(value))), " ")
 }
 
 func canonicalUnitHint(unit string) string {
 	switch strings.ToLower(strings.TrimSpace(unit)) {
-	case "gram", "grams", "gr", "g":
+	case "gram", "grams", "gramdı", "gramdi", "gr", "g":
 		return "g"
 	case "kilogram", "kg":
 		return "kg"
@@ -314,13 +564,14 @@ func containsCandidate(candidates []FoodCandidate, foodID int64) bool {
 	return false
 }
 
-func containsPortion(portions []food.Portion, portionID int64) bool {
-	for _, portion := range portions {
+func findPortion(portions []food.Portion, portionID int64) *food.Portion {
+	for index := range portions {
+		portion := &portions[index]
 		if portion.ID == portionID {
-			return true
+			return portion
 		}
 	}
-	return false
+	return nil
 }
 
 func finitePositive(value float64) bool {

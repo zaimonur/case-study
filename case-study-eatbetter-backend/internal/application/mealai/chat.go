@@ -84,6 +84,10 @@ func (s *Service) continueChat(ctx context.Context, locale, message string, stat
 	if err != nil {
 		return ChatResult{}, mapChatInterpretationError(err)
 	}
+	decision, err = mealchat.ValidateContinuationDecision(continuationRequest, decision)
+	if err != nil {
+		return ChatResult{}, newError(ErrorAIInvalidResponse, err)
+	}
 	if decision.Kind != mealchat.ContinuationUnresolved {
 		updated, err := s.applyChatDecision(ctx, locale, item, decision, &state.Items[*active])
 		if err != nil {
@@ -221,6 +225,9 @@ func validateConversationState(state ConversationState) error {
 		if err := validateContinuationIntent(item.Intent); err != nil {
 			return err
 		}
+		if err := mealchat.ValidateIntentEvidence(item.Evidence, item.Intent); err != nil {
+			return fmt.Errorf("conversation intent evidence is invalid: %w", err)
+		}
 		if item.FoodChoiceID != nil && *item.FoodChoiceID <= 0 {
 			return fmt.Errorf("invalid conversation food choice")
 		}
@@ -247,7 +254,7 @@ func chatContinuationRequest(message string, item Item) (mealchat.ContinuationRe
 	if item.Clarification == nil {
 		return mealchat.ContinuationRequest{}, fmt.Errorf("active item has no clarification")
 	}
-	request := mealchat.ContinuationRequest{Message: message, OriginalIntent: item.Intent}
+	request := mealchat.ContinuationRequest{Message: message, OriginalEvidence: item.Mention, OriginalIntent: item.Intent}
 	switch item.Clarification.Kind {
 	case ClarificationFoodIdentity:
 		request.Kind = mealchat.ClarificationFoodIdentity

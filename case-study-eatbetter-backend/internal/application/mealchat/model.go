@@ -63,12 +63,13 @@ type ResolvedFood struct {
 
 // ContinuationRequest scopes the latest message to one current clarification.
 type ContinuationRequest struct {
-	Message        string
-	Kind           ClarificationKind
-	OriginalIntent foodintent.FoodIntent
-	ResolvedFood   *ResolvedFood
-	Candidates     []FoodCandidate
-	Portions       []food.Portion
+	Message          string
+	Kind             ClarificationKind
+	OriginalEvidence string
+	OriginalIntent   foodintent.FoodIntent
+	ResolvedFood     *ResolvedFood
+	Candidates       []FoodCandidate
+	Portions         []food.Portion
 }
 
 // ContinuationKind is a constrained provider decision or an unresolved result.

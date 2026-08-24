@@ -178,6 +178,27 @@ func TestChatPortionContinuationUsesStoredPortionAndCalculator(t *testing.T) {
 	}
 }
 
+func TestChatPortionMeasureMismatchStaysUnresolvedWithoutCalculation(t *testing.T) {
+	intent := foodintent.FoodIntent{Query: "ekmek"}
+	wrongPortionID, quantity := int64(22), 2.0
+	dilim := food.Portion{ID: 21, FoodID: 7, Amount: 1, Measure: "dilim", Grams: 30}
+	bardak := food.Portion{ID: wrongPortionID, FoodID: 7, Amount: 1, Measure: "bardak", Grams: 100}
+	chat := &fakeChatInterpreter{
+		initial:   mealchat.InitialInterpretation{Purpose: mealchat.PurposeMealLogging, Items: []mealchat.InitialItem{{Evidence: "ekmek", Intent: intent}}},
+		decisions: []mealchat.ContinuationDecision{{Kind: mealchat.ContinuationPortion, PortionID: &wrongPortionID, Quantity: &quantity}},
+	}
+	resolver := &fakeFoodResolver{results: []foodresolver.Resolution{resolvedIdentity(7, "Ekmek", "Bread", nil), resolvedIdentity(7, "Ekmek", "Bread", nil)}}
+	clarification := foodamount.Resolution{State: foodamount.StateClarificationRequired, Reason: foodamount.ReasonQuantityRequired, Clarification: &foodamount.Clarification{Portions: []food.Portion{dilim, bardak}, AllowDirectGrams: true}}
+	amount := &fakeAmountResolver{results: []foodamount.Resolution{clarification, clarification}}
+	calculator := &fakeNutritionCalculator{}
+	service := NewService(&fakeTextExtractor{}, nil, resolver, amount, &fakeFoodDetailer{}, calculator, chat)
+	initial, _ := service.Chat(context.Background(), ChatRequest{Message: "ekmek yedim", Locale: "tr"})
+	continued, err := service.Chat(context.Background(), ChatRequest{Message: "2 dilim", Locale: "tr", State: &initial.NextState})
+	if err != nil || continued.State != StateClarificationRequired || continued.ActiveItemIndex == nil || amount.portionCalls != 0 || calculator.calls != 0 {
+		t.Fatalf("continued/error/portion/calculator = %#v / %v / %d / %d", continued, err, amount.portionCalls, calculator.calls)
+	}
+}
+
 func TestChatMultiItemReplayKeepsFirstReadyAndSecondActive(t *testing.T) {
 	grams, unit := 200.0, "g"
 	apple := foodintent.FoodIntent{Query: "elma", Quantity: &grams, UnitHint: &unit}
@@ -264,6 +285,77 @@ func TestChatRejectsReplayPortionOutsideCurrentStoredSet(t *testing.T) {
 	_, err := service.Chat(context.Background(), ChatRequest{Message: "bir adet", Locale: "tr", State: &state})
 	if !IsKind(err, ErrorInvalidInput) || amount.portionCalls != 0 {
 		t.Fatalf("error/portion calls = %v/%d", err, amount.portionCalls)
+	}
+}
+
+func TestChatPortionContinuationReusesPriorExplicitQuantity(t *testing.T) {
+	originalQuantity, unit := 2.0, "adet"
+	intent := foodintent.FoodIntent{Query: "ekmek", Quantity: &originalQuantity, UnitHint: &unit}
+	portionID := int64(21)
+	portion := food.Portion{ID: portionID, FoodID: 7, Amount: 1, Measure: "dilim", Grams: 30}
+	chat := &fakeChatInterpreter{
+		initial:   mealchat.InitialInterpretation{Purpose: mealchat.PurposeMealLogging, Items: []mealchat.InitialItem{{Evidence: "2 ekmek", Intent: intent}}},
+		decisions: []mealchat.ContinuationDecision{{Kind: mealchat.ContinuationPortion, PortionID: &portionID}},
+	}
+	resolver := &fakeFoodResolver{results: []foodresolver.Resolution{resolvedIdentity(7, "Ekmek", "Bread", nil), resolvedIdentity(7, "Ekmek", "Bread", nil)}}
+	clarification := foodamount.Resolution{State: foodamount.StateClarificationRequired, Reason: foodamount.ReasonUnsupportedUnitRequiresClarification, Clarification: &foodamount.Clarification{Portions: []food.Portion{portion}, AllowDirectGrams: true}}
+	selection := &foodamount.Selection{Kind: foodamount.SelectionPortion, FoodID: 7, Portion: &foodamount.PortionSelection{PortionID: portionID, Quantity: 2, Amount: 1, Measure: "dilim", PortionGrams: 30}}
+	amount := &fakeAmountResolver{results: []foodamount.Resolution{clarification, clarification}, portionResults: []foodamount.Resolution{{State: foodamount.StateResolved, Reason: foodamount.ReasonExplicitPortionSelection, Selection: selection}}}
+	detail := validDetail(7)
+	detail.Portions = []food.Portion{portion}
+	calculator := &fakeNutritionCalculator{results: []nutritioncalc.Result{{FoodID: 7, ResolvedGrams: 60}}}
+	service := NewService(&fakeTextExtractor{}, nil, resolver, amount, &fakeFoodDetailer{detail: detail}, calculator, chat)
+
+	initial, err := service.Chat(context.Background(), ChatRequest{Message: "2 ekmek yedim", Locale: "tr"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	continued, err := service.Chat(context.Background(), ChatRequest{Message: "dilim olarak", Locale: "tr", State: &initial.NextState})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if continued.State != StateReady || amount.portionCalls != 1 || amount.portionRequests[0].Quantity != 2 || calculator.calls != 1 || continued.Items[0].Preview.ResolvedGrams != 60 {
+		t.Fatalf("continued/portion/calculator = %#v / %#v / %d", continued, amount.portionRequests, calculator.calls)
+	}
+}
+
+func TestChatPortionContinuationLatestQuantityOverridesPriorQuantity(t *testing.T) {
+	originalQuantity, unit := 2.0, "adet"
+	override := 3.0
+	intent := foodintent.FoodIntent{Query: "ekmek", Quantity: &originalQuantity, UnitHint: &unit}
+	portionID := int64(21)
+	portion := food.Portion{ID: portionID, FoodID: 7, Amount: 1, Measure: "dilim", Grams: 30}
+	chat := &fakeChatInterpreter{
+		initial:   mealchat.InitialInterpretation{Purpose: mealchat.PurposeMealLogging, Items: []mealchat.InitialItem{{Evidence: "2 ekmek", Intent: intent}}},
+		decisions: []mealchat.ContinuationDecision{{Kind: mealchat.ContinuationPortion, PortionID: &portionID, Quantity: &override}},
+	}
+	resolver := &fakeFoodResolver{results: []foodresolver.Resolution{resolvedIdentity(7, "Ekmek", "Bread", nil), resolvedIdentity(7, "Ekmek", "Bread", nil)}}
+	clarification := foodamount.Resolution{State: foodamount.StateClarificationRequired, Reason: foodamount.ReasonUnsupportedUnitRequiresClarification, Clarification: &foodamount.Clarification{Portions: []food.Portion{portion}, AllowDirectGrams: true}}
+	selection := &foodamount.Selection{Kind: foodamount.SelectionPortion, FoodID: 7, Portion: &foodamount.PortionSelection{PortionID: portionID, Quantity: 3, Amount: 1, Measure: "dilim", PortionGrams: 30}}
+	amount := &fakeAmountResolver{results: []foodamount.Resolution{clarification, clarification}, portionResults: []foodamount.Resolution{{State: foodamount.StateResolved, Reason: foodamount.ReasonExplicitPortionSelection, Selection: selection}}}
+	detail := validDetail(7)
+	detail.Portions = []food.Portion{portion}
+	calculator := &fakeNutritionCalculator{results: []nutritioncalc.Result{{FoodID: 7, ResolvedGrams: 90}}}
+	service := NewService(&fakeTextExtractor{}, nil, resolver, amount, &fakeFoodDetailer{detail: detail}, calculator, chat)
+	initial, _ := service.Chat(context.Background(), ChatRequest{Message: "2 ekmek yedim", Locale: "tr"})
+	continued, err := service.Chat(context.Background(), ChatRequest{Message: "3 dilim", Locale: "tr", State: &initial.NextState})
+	if err != nil || continued.State != StateReady || amount.portionCalls != 1 || amount.portionRequests[0].Quantity != 3 || calculator.calls != 1 {
+		t.Fatalf("continued/error/requests/calls = %#v / %v / %#v / %d", continued, err, amount.portionRequests, calculator.calls)
+	}
+}
+
+func TestChatRejectsTamperedPriorQuantityBeforeNutrition(t *testing.T) {
+	active := 0
+	claimed, unit := 5.0, "adet"
+	state := ConversationState{
+		Version: ConversationVersion, Purpose: ChatPurposeMealLogging, ActiveItemIndex: &active,
+		Items: []ConversationItemState{{Position: 0, Evidence: "2 ekmek", Intent: foodintent.FoodIntent{Query: "ekmek", Quantity: &claimed, UnitHint: &unit}}},
+	}
+	resolver, amount, calculator := &fakeFoodResolver{}, &fakeAmountResolver{}, &fakeNutritionCalculator{}
+	service := NewService(&fakeTextExtractor{}, nil, resolver, amount, &fakeFoodDetailer{}, calculator, &fakeChatInterpreter{})
+	_, err := service.Chat(context.Background(), ChatRequest{Message: "dilim olarak", Locale: "tr", State: &state})
+	if !IsKind(err, ErrorInvalidInput) || resolver.calls != 0 || amount.calls != 0 || calculator.calls != 0 {
+		t.Fatalf("error/calls = %v / %d/%d/%d", err, resolver.calls, amount.calls, calculator.calls)
 	}
 }
 

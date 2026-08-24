@@ -98,6 +98,53 @@ func TestChatContinuationAllowsOnlyOwnedStoredPortion(t *testing.T) {
 	}
 }
 
+func TestChatContinuationNormalizesUnsupportedAllowedPortionToUnresolved(t *testing.T) {
+	request := mealchat.ContinuationRequest{
+		Message: "2 dilim", Kind: mealchat.ClarificationAmount, OriginalIntent: foodintent.FoodIntent{Query: "ekmek"},
+		ResolvedFood: &mealchat.ResolvedFood{FoodID: 7, DisplayName: "Ekmek", CanonicalName: "Bread"},
+		Candidates:   []mealchat.FoodCandidate{}, Portions: []food.Portion{
+			{ID: 21, FoodID: 7, Amount: 1, Measure: "dilim", Grams: 30},
+			{ID: 22, FoodID: 7, Amount: 1, Measure: "bardak", Grams: 100},
+		},
+	}
+	extractor := newChatTestExtractor(t, func(*http.Request) (*http.Response, error) {
+		return chatHTTPResponse(http.StatusOK, `{"outcome":"portion","food_id":null,"grams":null,"portion_id":22,"quantity":2}`), nil
+	})
+	decision, err := extractor.InterpretContinuation(context.Background(), request)
+	if err != nil || decision.Kind != mealchat.ContinuationUnresolved || decision.Quantity != nil {
+		t.Fatalf("decision/error = %#v / %v", decision, err)
+	}
+}
+
+func TestChatContinuationCanReuseValidatedOriginalQuantity(t *testing.T) {
+	originalQuantity, unit := 2.0, "adet"
+	portionID := int64(21)
+	captured := make(chan map[string]any, 1)
+	request := mealchat.ContinuationRequest{
+		Message: "dilim olarak", Kind: mealchat.ClarificationAmount,
+		OriginalEvidence: "2 ekmek", OriginalIntent: foodintent.FoodIntent{Query: "ekmek", Quantity: &originalQuantity, UnitHint: &unit},
+		ResolvedFood: &mealchat.ResolvedFood{FoodID: 7, DisplayName: "Ekmek", CanonicalName: "Bread"},
+		Candidates:   []mealchat.FoodCandidate{}, Portions: []food.Portion{{ID: portionID, FoodID: 7, Amount: 1, Measure: "dilim", Grams: 30}},
+	}
+	extractor := newChatTestExtractor(t, func(httpRequest *http.Request) (*http.Response, error) {
+		var body map[string]any
+		if err := json.NewDecoder(httpRequest.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		captured <- body
+		return chatHTTPResponse(http.StatusOK, `{"outcome":"portion","food_id":null,"grams":null,"portion_id":21,"quantity":null}`), nil
+	})
+	decision, err := extractor.InterpretContinuation(context.Background(), request)
+	if err != nil || decision.Quantity == nil || *decision.Quantity != 2 {
+		t.Fatalf("decision/error = %#v / %v", decision, err)
+	}
+	body := <-captured
+	messages := body["messages"].([]any)
+	if !strings.Contains(messages[1].(map[string]any)["content"].(string), `"original_evidence":"2 ekmek"`) {
+		t.Fatalf("original evidence missing from provider data: %#v", messages[1])
+	}
+}
+
 func TestChatTransportClassification(t *testing.T) {
 	for _, test := range []struct {
 		status int

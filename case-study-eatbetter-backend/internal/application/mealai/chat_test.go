@@ -56,32 +56,116 @@ func TestChatInitialNutritionQueryUsesDeterministicPipeline(t *testing.T) {
 	}
 }
 
+func TestChatInitialFoodIdentitySpecificityIsAmountInvariant(t *testing.T) {
+	const (
+		foodID        = int64(42)
+		displayName   = "Az yağlı krem peynir"
+		canonicalName = "Low fat cream cheese"
+		query         = "az yağlı krem peynir"
+	)
+	amountClarification := foodamount.Resolution{
+		State: foodamount.StateClarificationRequired, Reason: foodamount.ReasonQuantityRequired,
+		Clarification: &foodamount.Clarification{Portions: []food.Portion{}, AllowDirectGrams: true},
+	}
+
+	missingChat := &fakeChatInterpreter{initial: mealchat.InitialInterpretation{
+		Purpose: mealchat.PurposeMealLogging,
+		Items: []mealchat.InitialItem{{
+			Evidence: "Az yağlı krem peynir", Intent: foodintent.FoodIntent{Query: query},
+		}},
+	}}
+	missingResolver := &fakeFoodResolver{results: []foodresolver.Resolution{resolvedIdentity(foodID, displayName, canonicalName, nil)}}
+	missingAmount := &fakeAmountResolver{results: []foodamount.Resolution{amountClarification}}
+	missing, err := NewService(
+		&fakeTextExtractor{}, nil, missingResolver, missingAmount, &fakeFoodDetailer{}, &fakeNutritionCalculator{}, missingChat,
+	).Chat(context.Background(), ChatRequest{Message: "Az yağlı krem peynir yedim.", Locale: "tr-TR"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if missing.State != StateClarificationRequired || len(missing.Items) != 1 || missing.Items[0].Food == nil || missing.Items[0].Food.FoodID != foodID || missing.Items[0].Food.DisplayName != displayName {
+		t.Fatalf("missing-amount result = %#v", missing)
+	}
+	if missing.Items[0].Clarification == nil || missing.Items[0].Clarification.Kind != ClarificationAmount || !strings.Contains(missing.Assistant.Text, displayName) {
+		t.Fatalf("missing-amount clarification/assistant = %#v / %#v", missing.Items[0].Clarification, missing.Assistant)
+	}
+	if len(missingResolver.requests) != 1 || missingResolver.requests[0].Intent.Query != query || missingResolver.requests[0].Intent.Quantity != nil || missingResolver.requests[0].Intent.UnitHint != nil {
+		t.Fatalf("missing-amount resolver request = %#v", missingResolver.requests)
+	}
+
+	quantity, unit := 150.0, "g"
+	explicitIntent := foodintent.FoodIntent{Query: query, Quantity: &quantity, UnitHint: &unit}
+	explicitChat := &fakeChatInterpreter{initial: mealchat.InitialInterpretation{
+		Purpose: mealchat.PurposeMealLogging,
+		Items: []mealchat.InitialItem{{
+			Evidence: "150 g az yağlı krem peynir", Intent: explicitIntent,
+		}},
+	}}
+	explicitResolver := &fakeFoodResolver{results: []foodresolver.Resolution{resolvedIdentity(foodID, displayName, canonicalName, nil)}}
+	explicitAmount := &fakeAmountResolver{results: []foodamount.Resolution{resolvedGrams(foodID, quantity)}}
+	calculator := &fakeNutritionCalculator{results: []nutritioncalc.Result{{FoodID: foodID, ResolvedGrams: quantity}}}
+	explicit, err := NewService(
+		&fakeTextExtractor{}, nil, explicitResolver, explicitAmount, &fakeFoodDetailer{}, calculator, explicitChat,
+	).Chat(context.Background(), ChatRequest{Message: "150 g az yağlı krem peynir yedim.", Locale: "tr-TR"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if explicit.State != StateReady || len(explicit.Items) != 1 || explicit.Items[0].Food == nil || explicit.Items[0].Food.FoodID != foodID || explicit.Items[0].Food.DisplayName != displayName || explicit.Items[0].Preview == nil || explicit.Items[0].Preview.ResolvedGrams != quantity {
+		t.Fatalf("explicit-amount result = %#v", explicit)
+	}
+	if len(explicitResolver.requests) != 1 || explicitResolver.requests[0].Intent.Query != query || explicitResolver.requests[0].Intent.Quantity == nil || *explicitResolver.requests[0].Intent.Quantity != quantity || explicitResolver.requests[0].Intent.UnitHint == nil || *explicitResolver.requests[0].Intent.UnitHint != unit {
+		t.Fatalf("explicit-amount resolver request = %#v", explicitResolver.requests)
+	}
+	if missing.Items[0].Food.FoodID != explicit.Items[0].Food.FoodID || missingResolver.requests[0].Intent.Query != explicitResolver.requests[0].Intent.Query {
+		t.Fatalf("identity changed with amount: missing=%#v explicit=%#v", missing.Items[0], explicit.Items[0])
+	}
+}
+
 func TestChatAmountContinuationReplaysThenUsesResolveSelection(t *testing.T) {
-	intent := foodintent.FoodIntent{Query: "tavuk"}
+	const (
+		foodID        = int64(42)
+		displayName   = "Az yağlı krem peynir"
+		canonicalName = "Low fat cream cheese"
+		query         = "az yağlı krem peynir"
+	)
+	intent := foodintent.FoodIntent{Query: query}
 	grams := 150.0
 	chat := &fakeChatInterpreter{
-		initial:   mealchat.InitialInterpretation{Purpose: mealchat.PurposeMealLogging, Items: []mealchat.InitialItem{{Evidence: "tavuk", Intent: intent}}},
+		initial:   mealchat.InitialInterpretation{Purpose: mealchat.PurposeMealLogging, Items: []mealchat.InitialItem{{Evidence: displayName, Intent: intent}}},
 		decisions: []mealchat.ContinuationDecision{{Kind: mealchat.ContinuationGrams, Grams: &grams}},
 	}
 	resolver := &fakeFoodResolver{results: []foodresolver.Resolution{
-		resolvedIdentity(7, "Tavuk", "Chicken", nil), resolvedIdentity(7, "Tavuk", "Chicken", nil),
+		resolvedIdentity(foodID, displayName, canonicalName, nil), resolvedIdentity(foodID, displayName, canonicalName, nil),
 	}}
 	clarification := foodamount.Resolution{State: foodamount.StateClarificationRequired, Reason: foodamount.ReasonQuantityRequired, Clarification: &foodamount.Clarification{Portions: []food.Portion{}, AllowDirectGrams: true}}
-	amount := &fakeAmountResolver{results: []foodamount.Resolution{clarification, clarification, resolvedGrams(7, 150)}}
-	detailer := &fakeFoodDetailer{detail: validDetail(7)}
-	calculator := &fakeNutritionCalculator{}
+	amount := &fakeAmountResolver{results: []foodamount.Resolution{clarification, clarification, resolvedGrams(foodID, grams)}}
+	detail := validDetail(foodID)
+	detail.DisplayName, detail.Food.CanonicalName = displayName, canonicalName
+	detailer := &fakeFoodDetailer{detail: detail}
+	calculator := &fakeNutritionCalculator{results: []nutritioncalc.Result{{FoodID: foodID, ResolvedGrams: grams}}}
 	service := NewService(&fakeTextExtractor{}, nil, resolver, amount, detailer, calculator, chat)
 
-	initial, err := service.Chat(context.Background(), ChatRequest{Message: "tavuk yedim", Locale: "tr-TR"})
+	initial, err := service.Chat(context.Background(), ChatRequest{Message: "Az yağlı krem peynir yedim.", Locale: "tr-TR"})
 	if err != nil || initial.State != StateClarificationRequired {
 		t.Fatalf("initial/error = %#v / %v", initial, err)
+	}
+	if initial.Items[0].Food == nil || initial.Items[0].Food.FoodID != foodID || initial.Items[0].Food.DisplayName != displayName || !strings.Contains(initial.Assistant.Text, displayName) {
+		t.Fatalf("initial identity/assistant = %#v / %#v", initial.Items[0], initial.Assistant)
 	}
 	continued, err := service.Chat(context.Background(), ChatRequest{Message: "150 gramdı", Locale: "tr-TR", State: &initial.NextState})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if continued.State != StateReady || continued.Items[0].Preview == nil || continued.NextState.Items[0].AmountChoice == nil || calculator.calls != 1 {
+	if continued.State != StateReady || continued.Items[0].Food == nil || continued.Items[0].Food.FoodID != foodID || continued.Items[0].Food.DisplayName != displayName || continued.Items[0].Preview == nil || continued.Items[0].Preview.ResolvedGrams != grams || continued.NextState.Items[0].AmountChoice == nil || calculator.calls != 1 {
 		t.Fatalf("continued/calls = %#v / %d", continued, calculator.calls)
+	}
+	if len(resolver.requests) != 2 || resolver.requests[0].Intent.Query != query || resolver.requests[1].Intent.Query != query {
+		t.Fatalf("resolver requests = %#v", resolver.requests)
+	}
+	if len(amount.requests) != 3 || amount.requests[0].FoodID != foodID || amount.requests[1].FoodID != foodID || amount.requests[2].FoodID != foodID || amount.requests[2].Intent.Quantity == nil || *amount.requests[2].Intent.Quantity != grams {
+		t.Fatalf("amount requests = %#v", amount.requests)
+	}
+	if len(calculator.requests) != 1 || calculator.requests[0].FoodID != foodID || calculator.requests[0].Grams == nil || *calculator.requests[0].Grams != grams {
+		t.Fatalf("calculator requests = %#v", calculator.requests)
 	}
 }
 

@@ -53,6 +53,76 @@ func TestChatInitialHasSeparateQuestionSemanticsAndNoNutritionSchema(t *testing.
 	}
 }
 
+func TestChatInitialPromptMakesIdentitySpecificityAmountInvariant(t *testing.T) {
+	tests := []struct {
+		name         string
+		message      string
+		providerJSON string
+		wantEvidence string
+		wantQuantity float64
+		wantUnit     string
+	}{
+		{
+			name:         "missing amount",
+			message:      "Az yağlı krem peynir yedim.",
+			providerJSON: `{"purpose":"meal_logging","items":[{"evidence":"Az yağlı krem peynir","intent":{"query":"az yağlı krem peynir","quantity":null,"unitHint":null}}]}`,
+			wantEvidence: "Az yağlı krem peynir",
+		},
+		{
+			name:         "explicit amount",
+			message:      "150 g az yağlı krem peynir yedim.",
+			providerJSON: `{"purpose":"meal_logging","items":[{"evidence":"150 g az yağlı krem peynir","intent":{"query":"az yağlı krem peynir","quantity":150,"unitHint":"g"}}]}`,
+			wantEvidence: "150 g az yağlı krem peynir",
+			wantQuantity: 150,
+			wantUnit:     "g",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			captured := make(chan map[string]any, 1)
+			extractor := newChatTestExtractor(t, func(request *http.Request) (*http.Response, error) {
+				var body map[string]any
+				if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+					t.Fatalf("decode request: %v", err)
+				}
+				captured <- body
+				return chatHTTPResponse(http.StatusOK, test.providerJSON), nil
+			})
+
+			result, err := extractor.InterpretInitial(context.Background(), test.message)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(result.Items) != 1 || result.Items[0].Evidence != test.wantEvidence || result.Items[0].Intent.Query != "az yağlı krem peynir" {
+				t.Fatalf("result = %#v", result)
+			}
+			if test.wantUnit == "" {
+				if result.Items[0].Intent.Quantity != nil || result.Items[0].Intent.UnitHint != nil {
+					t.Fatalf("intent = %#v", result.Items[0].Intent)
+				}
+			} else if result.Items[0].Intent.Quantity == nil || *result.Items[0].Intent.Quantity != test.wantQuantity || result.Items[0].Intent.UnitHint == nil || *result.Items[0].Intent.UnitHint != test.wantUnit {
+				t.Fatalf("intent = %#v", result.Items[0].Intent)
+			}
+
+			body := <-captured
+			messages := body["messages"].([]any)
+			prompt := messages[0].(map[string]any)["content"].(string)
+			for _, required := range []string{
+				"every explicitly stated identity-defining word",
+				"Identity specificity is invariant to amount presence or absence",
+				"Az yağlı krem peynir yedim.",
+				"150 g az yağlı krem peynir yedim.",
+				`the same query "az yağlı krem peynir"`,
+			} {
+				if !strings.Contains(prompt, required) {
+					t.Fatalf("initial prompt lacks %q: %q", required, prompt)
+				}
+			}
+		})
+	}
+}
+
 func TestChatContinuationRejectsDisallowedIDsAndVagueInventedGrams(t *testing.T) {
 	request := mealchat.ContinuationRequest{
 		Message: "Izgara olan", Kind: mealchat.ClarificationFoodIdentity,

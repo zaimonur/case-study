@@ -5,12 +5,16 @@ const LEADING_EXPLICIT_AMOUNT_PATTERN = new RegExp(
   `^(?:\\d+\\s+\\d+\\s*\\/\\s*\\d+|\\d+\\s*\\/\\s*\\d+|\\d+\\s*[${UNICODE_FRACTION_CHARACTERS}]|[${UNICODE_FRACTION_CHARACTERS}]|\\d+(?:\\.\\d+)?)(?=\\s|$)`,
 );
 
-export function formatPortionAmountAndMeasure(amount: number, measure: string): string {
+export function formatPortionAmountAndMeasure(
+  amount: number,
+  measure: string,
+  formatAmount: (value: number) => string = String,
+): string {
   const trimmedMeasure = measure.trim();
 
   return LEADING_EXPLICIT_AMOUNT_PATTERN.test(trimmedMeasure)
     ? trimmedMeasure
-    : `${amount} ${trimmedMeasure}`.trim();
+    : `${formatAmount(amount)} ${trimmedMeasure}`.trim();
 }
 
 export function formatPortionDescription(portion: FoodPortion): string {

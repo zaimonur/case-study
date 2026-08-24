@@ -89,6 +89,7 @@ function formatSelection(item: NutritionReportItem): string {
   const amountAndMeasure = formatPortionAmountAndMeasure(
     item.selection.amount,
     item.selection.measure,
+    formatReportSelectionNumber,
   );
 
   return item.selection.quantity === 1

@@ -43,6 +43,7 @@ func TestMealChatEndpointInitialSuccessIsPostOnlyAndNoStore(t *testing.T) {
 	active := (*int)(nil)
 	service := &stubMealChatService{result: mealai.ChatResult{
 		Purpose: mealai.ChatPurposeNutritionQuery, State: mealai.StateReady,
+		Assistant: mealai.AssistantResponse{Kind: mealai.AssistantNutritionAnswer, Text: "150 g Elma için besin değerleri hazır."},
 		Items: []mealai.Item{{
 			Mention: "150 g elma", Intent: intent, State: mealai.ItemReady,
 			Food:      &mealai.ResolvedFood{FoodID: 7, DisplayName: "Elma", CanonicalName: "Apple"},
@@ -59,7 +60,7 @@ func TestMealChatEndpointInitialSuccessIsPostOnlyAndNoStore(t *testing.T) {
 	request := httptest.NewRequest(http.MethodPost, "/ai/meals/chat", strings.NewReader(`{"message":"150 g elma kaç kalori?","locale":"tr-TR","state":null}`))
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, request)
-	if response.Code != http.StatusOK || response.Header().Get("Cache-Control") != "no-store" || !strings.Contains(response.Body.String(), `"purpose":"nutrition_query"`) {
+	if response.Code != http.StatusOK || response.Header().Get("Cache-Control") != "no-store" || !strings.Contains(response.Body.String(), `"purpose":"nutrition_query"`) || !strings.Contains(response.Body.String(), `"assistant":{"kind":"nutrition_answer"`) {
 		t.Fatalf("response = %d %q %#v", response.Code, response.Body.String(), response.Header())
 	}
 	if service.calls != 1 || service.requests[0].State != nil {
@@ -76,7 +77,7 @@ func TestMealChatEndpointInitialSuccessIsPostOnlyAndNoStore(t *testing.T) {
 func TestMealChatEndpointDecodesContinuationState(t *testing.T) {
 	service := &stubMealChatService{result: validChatClarificationResult()}
 	router := chatRouter(service)
-	body := `{"message":"ızgara olan","locale":"tr","state":{"version":1,"purpose":"meal_logging","items":[{"position":0,"evidence":"tavuk","intent":{"query":"tavuk","quantity":null,"unit_hint":null},"food_choice_id":null,"amount_choice":null}],"active_item_index":0}}`
+	body := `{"message":"ızgara olan","locale":"tr","state":{"version":2,"purpose":"meal_logging","items":[{"position":0,"evidence":"ızgara tavuk","amount_evidence":"150 g tavuk","intent":{"query":"ızgara tavuk","quantity":150,"unit_hint":"g"},"food_choice_id":null,"amount_choice":null}],"active_item_index":0}}`
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/ai/meals/chat", strings.NewReader(body)))
 	if response.Code != http.StatusOK {
@@ -85,6 +86,9 @@ func TestMealChatEndpointDecodesContinuationState(t *testing.T) {
 	if service.calls != 1 || service.requests[0].State == nil || service.requests[0].State.ActiveItemIndex == nil || *service.requests[0].State.ActiveItemIndex != 0 {
 		t.Fatalf("request = %#v", service.requests)
 	}
+	if service.requests[0].State.Items[0].AmountEvidence == nil || *service.requests[0].State.Items[0].AmountEvidence != "150 g tavuk" {
+		t.Fatalf("amount evidence request = %#v", service.requests[0].State.Items[0])
+	}
 }
 
 func TestMealChatEndpointRejectsUnsafeJSON(t *testing.T) {
@@ -92,6 +96,7 @@ func TestMealChatEndpointRejectsUnsafeJSON(t *testing.T) {
 	for _, body := range []string{
 		`{`,
 		`{"message":"elma","locale":"tr","state":null,"extra":true}`,
+		`{"message":"elma","locale":"tr","assistant":{"kind":"guidance","text":"unsafe"},"state":null}`,
 		`{"message":"elma","locale":"tr","state":null}{"message":"ikinci"}`,
 		`{"message":"elma","locale":"tr","state":{"version":1,"purpose":"meal_logging","items":[],"active_item_index":null,"extra":1}}`,
 		oversized,
@@ -106,6 +111,8 @@ func TestMealChatEndpointRejectsUnsafeJSON(t *testing.T) {
 }
 
 func TestMealChatEndpointMapsErrorsAndMalformedOutputSafely(t *testing.T) {
+	malformedAssistant := validChatClarificationResult()
+	malformedAssistant.Assistant.Kind = mealai.AssistantMealReady
 	for _, test := range []struct {
 		service *stubMealChatService
 		want    int
@@ -113,6 +120,7 @@ func TestMealChatEndpointMapsErrorsAndMalformedOutputSafely(t *testing.T) {
 		{&stubMealChatService{err: &mealai.Error{Kind: mealai.ErrorInvalidInput}}, http.StatusBadRequest},
 		{&stubMealChatService{err: &mealai.Error{Kind: mealai.ErrorAIRateLimited}}, http.StatusTooManyRequests},
 		{&stubMealChatService{result: mealai.ChatResult{Purpose: mealai.ChatPurposeMealLogging, State: mealai.StateReady}}, http.StatusInternalServerError},
+		{&stubMealChatService{result: malformedAssistant}, http.StatusInternalServerError},
 	} {
 		response := httptest.NewRecorder()
 		chatRouter(test.service).ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/ai/meals/chat", strings.NewReader(`{"message":"elma","locale":"tr","state":null}`)))
@@ -153,6 +161,7 @@ func validChatClarificationResult() mealai.ChatResult {
 	}
 	return mealai.ChatResult{
 		Purpose: mealai.ChatPurposeMealLogging, State: mealai.StateClarificationRequired,
+		Assistant: mealai.AssistantResponse{Kind: mealai.AssistantClarification, Text: "Bunu mu kastettin?"},
 		Items: []mealai.Item{{Mention: "tavuk", Intent: intent, State: mealai.ItemClarificationRequired, Clarification: &mealai.Clarification{
 			Kind: mealai.ClarificationFoodIdentity, Reason: "ambiguous", Candidates: []mealai.FoodOption{{FoodID: 1, DisplayName: "Tavuk", CanonicalName: "Chicken"}}, Portions: []food.Portion{},
 		}}},

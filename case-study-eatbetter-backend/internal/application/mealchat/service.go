@@ -128,15 +128,23 @@ func validateContinuationRequest(request ContinuationRequest) error {
 		if !utf8.ValidString(request.OriginalEvidence) || utf8.RuneCountInString(request.OriginalEvidence) > MaxMessageRunes {
 			return fmt.Errorf("invalid original evidence")
 		}
-		if err := ValidateIntentEvidence(request.OriginalEvidence, request.OriginalIntent); err != nil {
-			return fmt.Errorf("original intent evidence: %w", err)
+		if request.OriginalAmountEvidence == nil {
+			if err := ValidateIntentEvidence(request.OriginalEvidence, request.OriginalIntent); err != nil {
+				return fmt.Errorf("original intent evidence: %w", err)
+			}
+		} else {
+			if err := validateAmountEvidence(*request.OriginalAmountEvidence, request.OriginalIntent); err != nil {
+				return fmt.Errorf("original amount evidence: %w", err)
+			}
 		}
 	} else if request.OriginalIntent.Quantity != nil || request.OriginalIntent.UnitHint != nil {
 		return fmt.Errorf("original evidence is required for amount intent")
+	} else if request.OriginalAmountEvidence != nil {
+		return fmt.Errorf("original identity evidence is required with amount evidence")
 	}
 	switch request.Kind {
 	case ClarificationFoodIdentity:
-		if request.ResolvedFood != nil || len(request.Candidates) == 0 || len(request.Portions) != 0 {
+		if request.ResolvedFood != nil || request.Candidates == nil || len(request.Portions) != 0 {
 			return fmt.Errorf("malformed food identity context")
 		}
 		seen := make(map[int64]struct{}, len(request.Candidates))
@@ -175,25 +183,43 @@ func validateContinuationRequest(request ContinuationRequest) error {
 func validateDecision(request ContinuationRequest, decision *ContinuationDecision) error {
 	switch decision.Kind {
 	case ContinuationUnresolved:
-		if decision.FoodID != nil || decision.Grams != nil || decision.PortionID != nil || decision.Quantity != nil {
+		if hasChoiceFields(*decision) || decision.ReplacementEvidence != nil || decision.ReplacementIntent != nil {
 			return fmt.Errorf("unresolved decision has choice fields")
 		}
 	case ContinuationFoodIdentity:
-		if request.Kind != ClarificationFoodIdentity || decision.FoodID == nil || decision.Grams != nil || decision.PortionID != nil || decision.Quantity != nil {
+		if request.Kind != ClarificationFoodIdentity || decision.FoodID == nil || decision.Grams != nil || decision.PortionID != nil || decision.Quantity != nil || decision.ReplacementEvidence != nil || decision.ReplacementIntent != nil {
 			return fmt.Errorf("malformed food identity decision")
 		}
 		if !containsCandidate(request.Candidates, *decision.FoodID) {
 			return fmt.Errorf("food identity is outside the allowed candidate set")
 		}
+	case ContinuationFoodRephrase:
+		if request.Kind != ClarificationFoodIdentity || hasChoiceFields(*decision) || decision.ReplacementEvidence == nil || decision.ReplacementIntent == nil {
+			return fmt.Errorf("malformed food rephrase decision")
+		}
+		evidence := *decision.ReplacementEvidence
+		if strings.TrimSpace(evidence) == "" || !utf8.ValidString(evidence) || utf8.RuneCountInString(evidence) > MaxMessageRunes || !strings.Contains(request.Message, evidence) {
+			return fmt.Errorf("replacement evidence is not an exact latest-message span")
+		}
+		if err := validateIntent(decision.ReplacementIntent.Query, decision.ReplacementIntent.Quantity, decision.ReplacementIntent.UnitHint); err != nil {
+			return fmt.Errorf("replacement intent: %w", err)
+		}
+		if err := ValidateIntentEvidence(evidence, *decision.ReplacementIntent); err != nil {
+			return fmt.Errorf("replacement intent evidence: %w", err)
+		}
+		if decision.ReplacementIntent.UnitHint != nil {
+			unit := canonicalUnitHint(*decision.ReplacementIntent.UnitHint)
+			decision.ReplacementIntent.UnitHint = &unit
+		}
 	case ContinuationGrams:
-		if request.Kind != ClarificationAmount || decision.FoodID != nil || decision.Grams == nil || decision.PortionID != nil || decision.Quantity != nil || !finitePositive(*decision.Grams) {
+		if request.Kind != ClarificationAmount || decision.FoodID != nil || decision.Grams == nil || decision.PortionID != nil || decision.Quantity != nil || decision.ReplacementEvidence != nil || decision.ReplacementIntent != nil || !finitePositive(*decision.Grams) {
 			return fmt.Errorf("malformed grams decision")
 		}
 		if !explicitGramEvidence(request.Message, *decision.Grams) {
 			return fmt.Errorf("grams decision has no exact source evidence")
 		}
 	case ContinuationPortion:
-		if request.Kind != ClarificationAmount || decision.FoodID != nil || decision.Grams != nil || decision.PortionID == nil || decision.Quantity != nil && !finitePositive(*decision.Quantity) {
+		if request.Kind != ClarificationAmount || decision.FoodID != nil || decision.Grams != nil || decision.PortionID == nil || decision.ReplacementEvidence != nil || decision.ReplacementIntent != nil || decision.Quantity != nil && !finitePositive(*decision.Quantity) {
 			return fmt.Errorf("malformed portion decision")
 		}
 		portion := findPortion(request.Portions, *decision.PortionID)
@@ -214,6 +240,20 @@ func validateDecision(request ContinuationRequest, decision *ContinuationDecisio
 		return fmt.Errorf("unknown continuation decision")
 	}
 	return nil
+}
+
+func hasChoiceFields(decision ContinuationDecision) bool {
+	return decision.FoodID != nil || decision.Grams != nil || decision.PortionID != nil || decision.Quantity != nil
+}
+
+func validateAmountEvidence(evidence string, intent foodintent.FoodIntent) error {
+	if strings.TrimSpace(evidence) == "" || !utf8.ValidString(evidence) || utf8.RuneCountInString(evidence) > MaxMessageRunes {
+		return fmt.Errorf("invalid amount evidence")
+	}
+	if intent.Quantity == nil && intent.UnitHint == nil {
+		return fmt.Errorf("amount evidence has no amount intent")
+	}
+	return ValidateIntentEvidence(evidence, intent)
 }
 
 // ValidateContinuationDecision applies the same allow-list and explicit
@@ -403,13 +443,17 @@ func effectivePortionQuantity(request ContinuationRequest, measure string, provi
 }
 
 func reusableOriginalQuantity(request ContinuationRequest) bool {
-	if request.OriginalIntent.Quantity == nil || strings.TrimSpace(request.OriginalEvidence) == "" {
+	evidence := request.OriginalEvidence
+	if request.OriginalAmountEvidence != nil {
+		evidence = *request.OriginalAmountEvidence
+	}
+	if request.OriginalIntent.Quantity == nil || strings.TrimSpace(evidence) == "" {
 		return false
 	}
-	if ValidateIntentEvidence(request.OriginalEvidence, request.OriginalIntent) != nil {
+	if ValidateIntentEvidence(evidence, request.OriginalIntent) != nil {
 		return false
 	}
-	return reusableBareCountEvidence(request.OriginalEvidence, request.OriginalIntent.Query, *request.OriginalIntent.Quantity)
+	return reusableBareCountEvidence(evidence, request.OriginalIntent.Query, *request.OriginalIntent.Quantity)
 }
 
 func reusableBareCountEvidence(evidence, query string, wanted float64) bool {

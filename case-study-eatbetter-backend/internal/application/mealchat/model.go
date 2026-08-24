@@ -63,13 +63,14 @@ type ResolvedFood struct {
 
 // ContinuationRequest scopes the latest message to one current clarification.
 type ContinuationRequest struct {
-	Message          string
-	Kind             ClarificationKind
-	OriginalEvidence string
-	OriginalIntent   foodintent.FoodIntent
-	ResolvedFood     *ResolvedFood
-	Candidates       []FoodCandidate
-	Portions         []food.Portion
+	Message                string
+	Kind                   ClarificationKind
+	OriginalEvidence       string
+	OriginalAmountEvidence *string
+	OriginalIntent         foodintent.FoodIntent
+	ResolvedFood           *ResolvedFood
+	Candidates             []FoodCandidate
+	Portions               []food.Portion
 }
 
 // ContinuationKind is a constrained provider decision or an unresolved result.
@@ -78,17 +79,20 @@ type ContinuationKind string
 const (
 	ContinuationUnresolved   ContinuationKind = "unresolved"
 	ContinuationFoodIdentity ContinuationKind = "food_identity"
+	ContinuationFoodRephrase ContinuationKind = "food_rephrase"
 	ContinuationGrams        ContinuationKind = "grams"
 	ContinuationPortion      ContinuationKind = "portion"
 )
 
 // ContinuationDecision contains only fields allowed by Kind.
 type ContinuationDecision struct {
-	Kind      ContinuationKind
-	FoodID    *int64
-	Grams     *float64
-	PortionID *int64
-	Quantity  *float64
+	Kind                ContinuationKind
+	FoodID              *int64
+	Grams               *float64
+	PortionID           *int64
+	Quantity            *float64
+	ReplacementEvidence *string
+	ReplacementIntent   *foodintent.FoodIntent
 }
 
 // Interpreter is the replaceable provider boundary.

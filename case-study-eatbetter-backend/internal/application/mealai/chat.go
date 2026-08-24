@@ -27,10 +27,16 @@ func (s *Service) Chat(ctx context.Context, request ChatRequest) (ChatResult, er
 	if s == nil || s.chatInterpreter == nil {
 		return ChatResult{}, newError(ErrorAIUnavailable, fmt.Errorf("chat interpreter is unavailable"))
 	}
+	var result ChatResult
 	if request.State == nil {
-		return s.initialChat(ctx, locale.Exact, request.Message)
+		result, err = s.initialChat(ctx, locale.Exact, request.Message)
+	} else {
+		result, err = s.continueChat(ctx, locale.Exact, request.Message, *request.State)
 	}
-	return s.continueChat(ctx, locale.Exact, request.Message, *request.State)
+	if err != nil {
+		return ChatResult{}, err
+	}
+	return finalizeChatResult(locale.Base, result)
 }
 
 func (s *Service) initialChat(ctx context.Context, locale, message string) (ChatResult, error) {
@@ -76,7 +82,7 @@ func (s *Service) continueChat(ctx context.Context, locale, message string, stat
 		return ChatResult{}, newError(ErrorInvalidInput, fmt.Errorf("conversation active item does not match replayed state"))
 	}
 	item := items[*active]
-	continuationRequest, err := chatContinuationRequest(message, item)
+	continuationRequest, err := chatContinuationRequest(message, item, state.Items[*active])
 	if err != nil {
 		return ChatResult{}, newError(ErrorResolutionFailure, err)
 	}
@@ -170,6 +176,11 @@ func (s *Service) applyChatDecision(ctx context.Context, locale string, item Ite
 	var foodID int64
 	var choice ExplicitChoice
 	switch decision.Kind {
+	case mealchat.ContinuationFoodRephrase:
+		if item.Clarification.Kind != ClarificationFoodIdentity || decision.ReplacementEvidence == nil || decision.ReplacementIntent == nil {
+			return Item{}, newError(ErrorAIInvalidResponse, fmt.Errorf("chat returned malformed food rephrase"))
+		}
+		return s.applyFoodRephrase(ctx, locale, decision, replay)
 	case mealchat.ContinuationFoodIdentity:
 		if decision.FoodID == nil || item.Clarification.Kind != ClarificationFoodIdentity || !allowedFoodID(item.Clarification, *decision.FoodID) {
 			return Item{}, newError(ErrorAIInvalidResponse, fmt.Errorf("chat selected disallowed food identity"))
@@ -203,6 +214,37 @@ func (s *Service) applyChatDecision(ctx context.Context, locale string, item Ite
 	return itemFromSelection(item.Mention, resolved), nil
 }
 
+func (s *Service) applyFoodRephrase(ctx context.Context, locale string, decision mealchat.ContinuationDecision, replay *ConversationItemState) (Item, error) {
+	evidence := *decision.ReplacementEvidence
+	intent := foodintent.FoodIntent{
+		Query: decision.ReplacementIntent.Query, Quantity: cloneFloat(decision.ReplacementIntent.Quantity),
+		UnitHint: cloneString(decision.ReplacementIntent.UnitHint),
+	}
+	var amountEvidence *string
+	if intent.Quantity == nil && intent.UnitHint == nil {
+		if preservedIntent, preservedEvidence, ok := independentlyPreservableAmount(*replay); ok {
+			intent.Quantity = cloneFloat(preservedIntent.Quantity)
+			intent.UnitHint = cloneString(preservedIntent.UnitHint)
+			amountEvidence = cloneString(&preservedEvidence)
+		}
+	}
+
+	replay.Evidence = evidence
+	replay.AmountEvidence = amountEvidence
+	replay.Intent = intent
+	replay.FoodChoiceID = nil
+	replay.AmountChoice = nil
+
+	_, interpreted, err := s.interpret(ctx, locale, []interpretationInput{{Evidence: evidence, Intent: intent}})
+	if err != nil {
+		return Item{}, err
+	}
+	if len(interpreted) != 1 {
+		return Item{}, newError(ErrorResolutionFailure, fmt.Errorf("food rephrase produced invalid materialized item count"))
+	}
+	return publicItems(interpreted)[0], nil
+}
+
 func validateConversationState(state ConversationState) error {
 	if state.Version != ConversationVersion {
 		return fmt.Errorf("unsupported conversation version")
@@ -219,14 +261,20 @@ func validateConversationState(state ConversationState) error {
 		return fmt.Errorf("invalid active item index")
 	}
 	for index, item := range state.Items {
-		if item.Position != index || strings.TrimSpace(item.Evidence) == "" || utf8.RuneCountInString(item.Evidence) > mealchat.MaxMessageRunes {
+		if item.Position != index || strings.TrimSpace(item.Evidence) == "" || !utf8.ValidString(item.Evidence) || utf8.RuneCountInString(item.Evidence) > mealchat.MaxMessageRunes {
 			return fmt.Errorf("invalid conversation item ordering or evidence")
 		}
 		if err := validateContinuationIntent(item.Intent); err != nil {
 			return err
 		}
-		if err := mealchat.ValidateIntentEvidence(item.Evidence, item.Intent); err != nil {
-			return fmt.Errorf("conversation intent evidence is invalid: %w", err)
+		if item.AmountEvidence == nil {
+			if err := mealchat.ValidateIntentEvidence(item.Evidence, item.Intent); err != nil {
+				return fmt.Errorf("conversation intent evidence is invalid: %w", err)
+			}
+		} else {
+			if _, _, ok := independentlyPreservableAmount(item); !ok {
+				return fmt.Errorf("conversation amount evidence is invalid")
+			}
 		}
 		if item.FoodChoiceID != nil && *item.FoodChoiceID <= 0 {
 			return fmt.Errorf("invalid conversation food choice")
@@ -250,11 +298,13 @@ func validateReplayAmountChoice(choice ExplicitChoice, clarification *Clarificat
 	return nil
 }
 
-func chatContinuationRequest(message string, item Item) (mealchat.ContinuationRequest, error) {
+func chatContinuationRequest(message string, item Item, replay ConversationItemState) (mealchat.ContinuationRequest, error) {
 	if item.Clarification == nil {
 		return mealchat.ContinuationRequest{}, fmt.Errorf("active item has no clarification")
 	}
-	request := mealchat.ContinuationRequest{Message: message, OriginalEvidence: item.Mention, OriginalIntent: item.Intent}
+	request := mealchat.ContinuationRequest{
+		Message: message, OriginalEvidence: replay.Evidence, OriginalAmountEvidence: cloneString(replay.AmountEvidence), OriginalIntent: item.Intent,
+	}
 	switch item.Clarification.Kind {
 	case ClarificationFoodIdentity:
 		request.Kind = mealchat.ClarificationFoodIdentity
@@ -369,7 +419,7 @@ func cloneConversationState(state ConversationState) ConversationState {
 	}
 	for _, item := range state.Items {
 		cloned.Items = append(cloned.Items, ConversationItemState{
-			Position: item.Position, Evidence: item.Evidence,
+			Position: item.Position, Evidence: item.Evidence, AmountEvidence: cloneString(item.AmountEvidence),
 			Intent: foodintent.FoodIntent{
 				Query: item.Intent.Query, Quantity: cloneFloat(item.Intent.Quantity), UnitHint: cloneString(item.Intent.UnitHint),
 			},
@@ -377,6 +427,34 @@ func cloneConversationState(state ConversationState) ConversationState {
 		})
 	}
 	return cloned
+}
+
+func independentlyPreservableAmount(item ConversationItemState) (foodintent.FoodIntent, string, bool) {
+	if item.Intent.Quantity == nil || item.Intent.UnitHint == nil {
+		return foodintent.FoodIntent{}, "", false
+	}
+	unit := strings.ToLower(strings.TrimSpace(*item.Intent.UnitHint))
+	switch unit {
+	case "g", "gr", "gram", "grams", "gramdı", "gramdi":
+		unit = "g"
+	case "kg", "kilogram":
+		unit = "kg"
+	case "ml", "mililitre", "millilitre", "milliliter":
+		unit = "ml"
+	case "l", "lt", "litre", "liter":
+		unit = "l"
+	default:
+		return foodintent.FoodIntent{}, "", false
+	}
+	evidence := item.Evidence
+	if item.AmountEvidence != nil {
+		evidence = *item.AmountEvidence
+	}
+	intent := foodintent.FoodIntent{Query: item.Intent.Query, Quantity: cloneFloat(item.Intent.Quantity), UnitHint: &unit}
+	if strings.TrimSpace(evidence) == "" || !utf8.ValidString(evidence) || utf8.RuneCountInString(evidence) > mealchat.MaxMessageRunes || mealchat.ValidateIntentEvidence(evidence, intent) != nil {
+		return foodintent.FoodIntent{}, "", false
+	}
+	return intent, evidence, true
 }
 
 func cloneString(value *string) *string {

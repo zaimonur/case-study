@@ -2,6 +2,7 @@ package mealai
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/zaimonur/case-study/case-study-eatbetter-backend/internal/application/foodamount"
@@ -381,6 +382,191 @@ func TestChatRejectsTamperedPriorQuantityBeforeNutrition(t *testing.T) {
 	_, err := service.Chat(context.Background(), ChatRequest{Message: "dilim olarak", Locale: "tr", State: &state})
 	if !IsKind(err, ErrorInvalidInput) || resolver.calls != 0 || amount.calls != 0 || calculator.calls != 0 {
 		t.Fatalf("error/calls = %v / %d/%d/%d", err, resolver.calls, amount.calls, calculator.calls)
+	}
+}
+
+func TestChatFoodRephraseRerunsTrustedPipelineAndPreservesOnlyRawAmount(t *testing.T) {
+	for _, test := range []struct {
+		name                string
+		message             string
+		replacementEvidence string
+		replacementQuantity *float64
+		wantQuantity        float64
+		wantAmountEvidence  bool
+	}{
+		{name: "independent prior amount", message: "ızgara tavuk göğsüydü", replacementEvidence: "ızgara tavuk göğsüydü", wantQuantity: 150, wantAmountEvidence: true},
+		{name: "latest amount overrides prior", message: "aslında 200 g ızgara tavuk göğsüydü", replacementEvidence: "200 g ızgara tavuk göğsüydü", replacementQuantity: floatPointer(200), wantQuantity: 200},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			originalQuantity, originalUnit := 150.0, "g"
+			originalIntent := foodintent.FoodIntent{Query: "tavuk", Quantity: &originalQuantity, UnitHint: &originalUnit}
+			replacementUnit := (*string)(nil)
+			if test.replacementQuantity != nil {
+				replacementUnit = stringPointer("g")
+			}
+			replacementIntent := foodintent.FoodIntent{Query: "ızgara tavuk göğsü", Quantity: test.replacementQuantity, UnitHint: replacementUnit}
+			chat := &fakeChatInterpreter{
+				initial: mealchat.InitialInterpretation{Purpose: mealchat.PurposeNutritionQuery, Items: []mealchat.InitialItem{{Evidence: "150 g tavuk gibi bir şey", Intent: originalIntent}}},
+				decisions: []mealchat.ContinuationDecision{{
+					Kind: mealchat.ContinuationFoodRephrase, ReplacementEvidence: &test.replacementEvidence, ReplacementIntent: &replacementIntent,
+				}},
+			}
+			notFound := foodresolver.Resolution{State: foodresolver.StateNotFound, Reason: foodresolver.ReasonNoCandidates, Candidates: []foodsearch.FoodCandidate{}}
+			resolver := &fakeFoodResolver{results: []foodresolver.Resolution{notFound, notFound, resolvedIdentity(7, "Izgara tavuk göğsü", "Grilled chicken breast", nil)}}
+			amount := &fakeAmountResolver{results: []foodamount.Resolution{resolvedGrams(7, test.wantQuantity)}}
+			calculator := &fakeNutritionCalculator{results: []nutritioncalc.Result{{FoodID: 7, ResolvedGrams: test.wantQuantity}}}
+			service := NewService(&fakeTextExtractor{}, nil, resolver, amount, &fakeFoodDetailer{}, calculator, chat)
+
+			initial, err := service.Chat(context.Background(), ChatRequest{Message: "150 g tavuk gibi bir şey", Locale: "tr"})
+			if err != nil || initial.State != StateClarificationRequired || initial.Assistant.Kind != AssistantClarification || len(initial.Items[0].Clarification.Candidates) != 0 {
+				t.Fatalf("initial/error = %#v / %v", initial, err)
+			}
+			continued, err := service.Chat(context.Background(), ChatRequest{Message: test.message, Locale: "tr", State: &initial.NextState})
+			if err != nil || continued.State != StateReady || continued.Assistant.Kind != AssistantNutritionAnswer || amount.calls != 1 || calculator.calls != 1 {
+				t.Fatalf("continued/error/calls = %#v / %v / %d/%d", continued, err, amount.calls, calculator.calls)
+			}
+			if amount.requests[0].Intent.Quantity == nil || *amount.requests[0].Intent.Quantity != test.wantQuantity || continued.NextState.Items[0].Evidence != test.replacementEvidence {
+				t.Fatalf("amount/state = %#v / %#v", amount.requests, continued.NextState)
+			}
+			amountEvidence := continued.NextState.Items[0].AmountEvidence
+			if test.wantAmountEvidence {
+				if amountEvidence == nil || *amountEvidence != "150 g tavuk gibi bir şey" {
+					t.Fatalf("amount evidence = %#v", amountEvidence)
+				}
+			} else if amountEvidence != nil {
+				t.Fatalf("latest amount should use current evidence, got %#v", amountEvidence)
+			}
+			if strings.Contains(continued.NextState.Items[0].Evidence, "150 g +") {
+				t.Fatalf("synthetic evidence = %q", continued.NextState.Items[0].Evidence)
+			}
+		})
+	}
+}
+
+func TestFoodRephraseAlwaysClearsDerivedChoices(t *testing.T) {
+	originalQuantity, unit := 150.0, "g"
+	foodChoice, portionID, portionQuantity := int64(99), int64(21), 2.0
+	replay := ConversationItemState{
+		Position: 0, Evidence: "150 g tavuk", Intent: foodintent.FoodIntent{Query: "tavuk", Quantity: &originalQuantity, UnitHint: &unit},
+		FoodChoiceID: &foodChoice, AmountChoice: &ExplicitChoice{Kind: ChoicePortion, PortionID: &portionID, Quantity: &portionQuantity},
+	}
+	replacementEvidence := "ızgara tavuk göğsüydü"
+	replacementIntent := foodintent.FoodIntent{Query: "ızgara tavuk göğsü"}
+	notFound := foodresolver.Resolution{State: foodresolver.StateNotFound, Reason: foodresolver.ReasonNoCandidates, Candidates: []foodsearch.FoodCandidate{}}
+	service := NewService(&fakeTextExtractor{}, nil, &fakeFoodResolver{results: []foodresolver.Resolution{notFound}}, &fakeAmountResolver{}, &fakeFoodDetailer{}, &fakeNutritionCalculator{}, &fakeChatInterpreter{})
+	_, err := service.applyFoodRephrase(context.Background(), "tr", mealchat.ContinuationDecision{
+		Kind: mealchat.ContinuationFoodRephrase, ReplacementEvidence: &replacementEvidence, ReplacementIntent: &replacementIntent,
+	}, &replay)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replay.FoodChoiceID != nil || replay.AmountChoice != nil || replay.AmountEvidence == nil || *replay.AmountEvidence != "150 g tavuk" {
+		t.Fatalf("replay = %#v", replay)
+	}
+}
+
+func TestConversationStateV2ValidatesAndClonesSeparateAmountEvidence(t *testing.T) {
+	active := 0
+	quantity, unit := 150.0, "g"
+	amountEvidence := "150 g tavuk gibi bir şey"
+	state := ConversationState{
+		Version: ConversationVersion, Purpose: ChatPurposeMealLogging, ActiveItemIndex: &active,
+		Items: []ConversationItemState{{
+			Position: 0, Evidence: "ızgara tavuk göğsüydü", AmountEvidence: &amountEvidence,
+			Intent: foodintent.FoodIntent{Query: "ızgara tavuk göğsü", Quantity: &quantity, UnitHint: &unit},
+		}},
+	}
+	if err := validateConversationState(state); err != nil {
+		t.Fatalf("validate v2: %v", err)
+	}
+	cloned := cloneConversationState(state)
+	*cloned.Items[0].AmountEvidence = "değiştirildi"
+	if *state.Items[0].AmountEvidence != amountEvidence {
+		t.Fatalf("clone aliased amount evidence: %#v", state.Items[0].AmountEvidence)
+	}
+
+	v1 := state
+	v1.Version = 1
+	if err := validateConversationState(v1); err == nil {
+		t.Fatal("version 1 continuation was accepted")
+	}
+	tampered := state
+	tampered.Items = append([]ConversationItemState(nil), state.Items...)
+	tamperedAmount := "200 g tavuk"
+	tampered.Items[0].AmountEvidence = &tamperedAmount
+	if err := validateConversationState(tampered); err == nil {
+		t.Fatal("tampered amount evidence was accepted")
+	}
+}
+
+func TestChatFoodRephraseDoesNotInheritIdentityDependentCount(t *testing.T) {
+	originalQuantity, unit := 2.0, "adet"
+	originalIntent := foodintent.FoodIntent{Query: "tavuk", Quantity: &originalQuantity, UnitHint: &unit}
+	replacementEvidence := "ızgara tavuk göğsüydü"
+	replacementIntent := foodintent.FoodIntent{Query: "ızgara tavuk göğsü"}
+	chat := &fakeChatInterpreter{
+		initial: mealchat.InitialInterpretation{Purpose: mealchat.PurposeMealLogging, Items: []mealchat.InitialItem{{Evidence: "2 tavuk gibi bir şey", Intent: originalIntent}}},
+		decisions: []mealchat.ContinuationDecision{{
+			Kind: mealchat.ContinuationFoodRephrase, ReplacementEvidence: &replacementEvidence, ReplacementIntent: &replacementIntent,
+		}},
+	}
+	notFound := foodresolver.Resolution{State: foodresolver.StateNotFound, Reason: foodresolver.ReasonNoCandidates, Candidates: []foodsearch.FoodCandidate{}}
+	resolver := &fakeFoodResolver{results: []foodresolver.Resolution{notFound, notFound, resolvedIdentity(7, "Izgara tavuk göğsü", "Grilled chicken breast", nil)}}
+	clarification := foodamount.Resolution{
+		State: foodamount.StateClarificationRequired, Reason: foodamount.ReasonQuantityRequired,
+		Clarification: &foodamount.Clarification{Portions: []food.Portion{}, AllowDirectGrams: true},
+	}
+	amount := &fakeAmountResolver{results: []foodamount.Resolution{clarification}}
+	calculator := &fakeNutritionCalculator{}
+	service := NewService(&fakeTextExtractor{}, nil, resolver, amount, &fakeFoodDetailer{}, calculator, chat)
+
+	initial, err := service.Chat(context.Background(), ChatRequest{Message: "2 tavuk gibi bir şey", Locale: "tr"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	continued, err := service.Chat(context.Background(), ChatRequest{Message: replacementEvidence, Locale: "tr", State: &initial.NextState})
+	if err != nil || continued.State != StateClarificationRequired || continued.Items[0].Intent.Quantity != nil || continued.NextState.Items[0].AmountEvidence != nil || calculator.calls != 0 {
+		t.Fatalf("continued/error/calculator = %#v / %v / %d", continued, err, calculator.calls)
+	}
+}
+
+func TestChatMultiItemRephraseChangesOnlyFirstUnresolvedItem(t *testing.T) {
+	grams, unit := 100.0, "g"
+	appleIntent := foodintent.FoodIntent{Query: "elma", Quantity: &grams, UnitHint: &unit}
+	chickenIntent := foodintent.FoodIntent{Query: "tavuk"}
+	replacementEvidence := "ızgara tavuk göğsüydü"
+	replacementIntent := foodintent.FoodIntent{Query: "ızgara tavuk göğsü"}
+	chat := &fakeChatInterpreter{
+		initial: mealchat.InitialInterpretation{Purpose: mealchat.PurposeMealLogging, Items: []mealchat.InitialItem{
+			{Evidence: "100 g elma", Intent: appleIntent}, {Evidence: "tavuk gibi bir şey", Intent: chickenIntent},
+		}},
+		decisions: []mealchat.ContinuationDecision{{Kind: mealchat.ContinuationFoodRephrase, ReplacementEvidence: &replacementEvidence, ReplacementIntent: &replacementIntent}},
+	}
+	apple := resolvedIdentity(1, "Elma", "Apple", nil)
+	notFound := foodresolver.Resolution{State: foodresolver.StateNotFound, Reason: foodresolver.ReasonNoCandidates, Candidates: []foodsearch.FoodCandidate{}}
+	grilled := resolvedIdentity(2, "Izgara tavuk göğsü", "Grilled chicken breast", nil)
+	resolver := &fakeFoodResolver{results: []foodresolver.Resolution{apple, notFound, apple, notFound, grilled}}
+	clarification := foodamount.Resolution{
+		State: foodamount.StateClarificationRequired, Reason: foodamount.ReasonQuantityRequired,
+		Clarification: &foodamount.Clarification{Portions: []food.Portion{}, AllowDirectGrams: true},
+	}
+	amount := &fakeAmountResolver{results: []foodamount.Resolution{resolvedGrams(1, 100), resolvedGrams(1, 100), clarification}}
+	calculator := &fakeNutritionCalculator{results: []nutritioncalc.Result{{FoodID: 1, ResolvedGrams: 100}, {FoodID: 1, ResolvedGrams: 100}}}
+	service := NewService(&fakeTextExtractor{}, nil, resolver, amount, &fakeFoodDetailer{}, calculator, chat)
+
+	initial, err := service.Chat(context.Background(), ChatRequest{Message: "100 g elma ve tavuk gibi bir şey", Locale: "tr"})
+	if err != nil || initial.ActiveItemIndex == nil || *initial.ActiveItemIndex != 1 {
+		t.Fatalf("initial/error = %#v / %v", initial, err)
+	}
+	continued, err := service.Chat(context.Background(), ChatRequest{Message: replacementEvidence, Locale: "tr", State: &initial.NextState})
+	if err != nil || continued.ActiveItemIndex == nil || *continued.ActiveItemIndex != 1 || continued.Items[0].State != ItemReady || continued.Items[1].Clarification == nil || continued.Items[1].Clarification.Kind != ClarificationAmount {
+		t.Fatalf("continued/error = %#v / %v", continued, err)
+	}
+	if continued.NextState.Items[0].Evidence != "100 g elma" || continued.NextState.Items[1].Evidence != replacementEvidence || chat.initialCalls != 1 || chat.continuationCalls != 1 {
+		t.Fatalf("state/calls = %#v / %d/%d", continued.NextState, chat.initialCalls, chat.continuationCalls)
+	}
+	if !strings.Contains(continued.Assistant.Text, "Izgara tavuk göğsü") || strings.Contains(continued.Assistant.Text, "Elma") {
+		t.Fatalf("assistant = %#v", continued.Assistant)
 	}
 }
 

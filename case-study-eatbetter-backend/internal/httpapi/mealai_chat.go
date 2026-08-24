@@ -64,13 +64,16 @@ func mealChatHandler(logger *slog.Logger, service MealChatService) http.Handler 
 			"request_id", requestIDFromContext(r.Context()), "purpose", result.Purpose,
 			"state", result.State, "item_count", len(result.Items), "ready_count", ready,
 			"clarification_count", clarification, "active_item_index", safeActiveIndex(result.ActiveItemIndex),
-			"turn_kind", chatTurnKind(command.State),
+			"turn_kind", chatTurnKind(command.State), "assistant_kind", result.Assistant.Kind,
 		)
 		writeJSON(w, http.StatusOK, response)
 	})
 }
 
 func mapMealChatResult(result mealai.ChatResult) (mealChatResponse, error) {
+	if err := mealai.ValidateAssistantResponse(result); err != nil {
+		return mealChatResponse{}, err
+	}
 	switch result.Purpose {
 	case mealai.ChatPurposeMealLogging, mealai.ChatPurposeNutritionQuery, mealai.ChatPurposeUnknown:
 	default:
@@ -105,7 +108,8 @@ func mapMealChatResult(result mealai.ChatResult) (mealChatResponse, error) {
 		return mealChatResponse{}, err
 	}
 	return mealChatResponse{
-		Purpose: string(result.Purpose), State: mapped.State, Items: mapped.Items,
+		Purpose: string(result.Purpose), State: mapped.State,
+		Assistant: assistantResponse{Kind: string(result.Assistant.Kind), Text: result.Assistant.Text}, Items: mapped.Items,
 		ActiveItemIndex: result.ActiveItemIndex, NextState: state,
 	}, nil
 }
@@ -124,7 +128,7 @@ func conversationState(request *mealChatState) *mealai.ConversationState {
 			}
 		}
 		items = append(items, mealai.ConversationItemState{
-			Position: item.Position, Evidence: item.Evidence, Intent: mealIntent(item.Intent),
+			Position: item.Position, Evidence: item.Evidence, AmountEvidence: item.AmountEvidence, Intent: mealIntent(item.Intent),
 			FoodChoiceID: item.FoodChoiceID, AmountChoice: amountChoice,
 		})
 	}
@@ -144,7 +148,7 @@ func mapConversationState(state mealai.ConversationState) (mealChatState, error)
 			return mealChatState{}, fmt.Errorf("invalid replay item")
 		}
 		mapped := mealChatStateItem{
-			Position: item.Position, Evidence: item.Evidence,
+			Position: item.Position, Evidence: item.Evidence, AmountEvidence: item.AmountEvidence,
 			Intent:       mealIntentRequest{Query: item.Intent.Query, Quantity: item.Intent.Quantity, UnitHint: item.Intent.UnitHint},
 			FoodChoiceID: item.FoodChoiceID,
 		}
@@ -200,6 +204,7 @@ type mealChatRequest struct {
 type mealChatResponse struct {
 	Purpose         string                      `json:"purpose"`
 	State           string                      `json:"state"`
+	Assistant       assistantResponse           `json:"assistant"`
 	Items           []mealInterpretItemResponse `json:"items"`
 	ActiveItemIndex *int                        `json:"active_item_index"`
 	NextState       mealChatState               `json:"next_state"`
@@ -213,9 +218,15 @@ type mealChatState struct {
 }
 
 type mealChatStateItem struct {
-	Position     int                `json:"position"`
-	Evidence     string             `json:"evidence"`
-	Intent       mealIntentRequest  `json:"intent"`
-	FoodChoiceID *int64             `json:"food_choice_id"`
-	AmountChoice *mealChoiceRequest `json:"amount_choice"`
+	Position       int                `json:"position"`
+	Evidence       string             `json:"evidence"`
+	AmountEvidence *string            `json:"amount_evidence"`
+	Intent         mealIntentRequest  `json:"intent"`
+	FoodChoiceID   *int64             `json:"food_choice_id"`
+	AmountChoice   *mealChoiceRequest `json:"amount_choice"`
+}
+
+type assistantResponse struct {
+	Kind string `json:"kind"`
+	Text string `json:"text"`
 }

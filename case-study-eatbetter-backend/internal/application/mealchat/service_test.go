@@ -359,3 +359,79 @@ func TestPortionDecisionRejectsTamperedOriginalQuantityEvidence(t *testing.T) {
 		t.Fatalf("error = %v", err)
 	}
 }
+
+func TestFoodIdentityContinuationSupportsRephraseWithOrWithoutCandidates(t *testing.T) {
+	foodID := int64(1)
+	replacementEvidence := "fırında tavuk göğsüydü"
+	replacementIntent := foodintent.FoodIntent{Query: "fırında tavuk göğsü"}
+	for _, test := range []struct {
+		name       string
+		candidates []FoodCandidate
+		decision   ContinuationDecision
+		wantError  bool
+	}{
+		{
+			name: "zero candidates allow rephrase", candidates: []FoodCandidate{},
+			decision: ContinuationDecision{Kind: ContinuationFoodRephrase, ReplacementEvidence: &replacementEvidence, ReplacementIntent: &replacementIntent},
+		},
+		{name: "zero candidates allow unresolved", candidates: []FoodCandidate{}, decision: ContinuationDecision{Kind: ContinuationUnresolved}},
+		{name: "zero candidates forbid identity", candidates: []FoodCandidate{}, decision: ContinuationDecision{Kind: ContinuationFoodIdentity, FoodID: &foodID}, wantError: true},
+		{
+			name:       "current candidates still allow rephrase",
+			candidates: []FoodCandidate{{FoodID: foodID, DisplayName: "Çiğ tavuk", CanonicalName: "Raw chicken"}},
+			decision:   ContinuationDecision{Kind: ContinuationFoodRephrase, ReplacementEvidence: &replacementEvidence, ReplacementIntent: &replacementIntent},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			request := ContinuationRequest{
+				Message: replacementEvidence, Kind: ClarificationFoodIdentity,
+				OriginalEvidence: "tavuk", OriginalIntent: foodintent.FoodIntent{Query: "tavuk"},
+				Candidates: test.candidates, Portions: []food.Portion{},
+			}
+			decision, err := NewService(&stubInterpreter{continuation: test.decision}).InterpretContinuation(context.Background(), request)
+			if test.wantError {
+				if !IsKind(err, ErrorInvalidProviderOutput) {
+					t.Fatalf("error = %v", err)
+				}
+				return
+			}
+			if err != nil || decision.Kind != test.decision.Kind {
+				t.Fatalf("decision/error = %#v / %v", decision, err)
+			}
+		})
+	}
+}
+
+func TestFoodRephraseValidationIsFailClosed(t *testing.T) {
+	validEvidence := "ızgara tavuk göğsüydü"
+	validIntent := foodintent.FoodIntent{Query: "ızgara tavuk göğsü"}
+	portionID := int64(21)
+	for _, test := range []struct {
+		name     string
+		request  ContinuationRequest
+		decision ContinuationDecision
+	}{
+		{
+			name:     "invalid replacement evidence",
+			request:  ContinuationRequest{Message: validEvidence, Kind: ClarificationFoodIdentity, OriginalEvidence: "tavuk", OriginalIntent: foodintent.FoodIntent{Query: "tavuk"}, Candidates: []FoodCandidate{}, Portions: []food.Portion{}},
+			decision: ContinuationDecision{Kind: ContinuationFoodRephrase, ReplacementEvidence: stringPointer("uydurulmuş span"), ReplacementIntent: &validIntent},
+		},
+		{
+			name: "rephrase during amount clarification",
+			request: ContinuationRequest{
+				Message: validEvidence, Kind: ClarificationAmount, OriginalEvidence: "tavuk", OriginalIntent: foodintent.FoodIntent{Query: "tavuk"},
+				ResolvedFood: &ResolvedFood{FoodID: 7, DisplayName: "Tavuk", CanonicalName: "Chicken"}, Candidates: []FoodCandidate{}, Portions: []food.Portion{{ID: portionID, FoodID: 7, Amount: 1, Measure: "adet", Grams: 100}},
+			},
+			decision: ContinuationDecision{Kind: ContinuationFoodRephrase, ReplacementEvidence: &validEvidence, ReplacementIntent: &validIntent},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := NewService(&stubInterpreter{continuation: test.decision}).InterpretContinuation(context.Background(), test.request)
+			if !IsKind(err, ErrorInvalidProviderOutput) {
+				t.Fatalf("error = %v", err)
+			}
+		})
+	}
+}
+
+func stringPointer(value string) *string { return &value }

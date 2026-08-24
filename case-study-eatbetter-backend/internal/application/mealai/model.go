@@ -163,8 +163,24 @@ const (
 	ChatPurposeMealLogging    = mealchat.PurposeMealLogging
 	ChatPurposeNutritionQuery = mealchat.PurposeNutritionQuery
 	ChatPurposeUnknown        = mealchat.PurposeUnknown
-	ConversationVersion       = 1
+	ConversationVersion       = 2
 )
+
+// AssistantResponseKind identifies deterministic user-facing prose semantics.
+type AssistantResponseKind string
+
+const (
+	AssistantNutritionAnswer AssistantResponseKind = "nutrition_answer"
+	AssistantMealReady       AssistantResponseKind = "meal_ready"
+	AssistantClarification   AssistantResponseKind = "clarification"
+	AssistantGuidance        AssistantResponseKind = "guidance"
+)
+
+// AssistantResponse is display-only prose derived from trusted materialized state.
+type AssistantResponse struct {
+	Kind AssistantResponseKind
+	Text string
+}
 
 // ChatRequest is one stateless conversational round trip.
 type ChatRequest struct {
@@ -177,6 +193,7 @@ type ChatRequest struct {
 type ChatResult struct {
 	Purpose         ChatPurpose
 	State           State
+	Assistant       AssistantResponse
 	Items           []Item
 	ActiveItemIndex *int
 	NextState       ConversationState
@@ -193,11 +210,12 @@ type ConversationState struct {
 
 // ConversationItemState is sufficient to replay one source-ordered item.
 type ConversationItemState struct {
-	Position     int
-	Evidence     string
-	Intent       foodintent.FoodIntent
-	FoodChoiceID *int64
-	AmountChoice *ExplicitChoice
+	Position       int
+	Evidence       string
+	AmountEvidence *string
+	Intent         foodintent.FoodIntent
+	FoodChoiceID   *int64
+	AmountChoice   *ExplicitChoice
 }
 
 // ExplicitChoiceKind identifies the explicit continuation action selected by the client.

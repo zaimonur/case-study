@@ -10,6 +10,11 @@ import type {
   ImageMealAiIntent,
   ImageMealInterpretResult,
   MealAiAmountClarification,
+  MealAiChatAmountChoice,
+  MealAiChatAssistant,
+  MealAiChatConversationState,
+  MealAiChatPurpose,
+  MealAiChatResult,
   MealAiFoodCandidate,
   MealAiFoodIdentityClarification,
   MealAiIntent,
@@ -25,6 +30,7 @@ import type {
   ReadyMealAiItem,
   ReadyMealAiResolveResult,
   ResolveMealSelectionInput,
+  SendMealAiChatMessageInput,
 } from '../domain/mealAi';
 import {
   MEAL_IMAGE_MAX_BYTES,
@@ -50,6 +56,9 @@ export type InterpretMealImageInput = {
 };
 
 const MEAL_AI_REQUEST_TIMEOUT_MS = 30_000;
+const MEAL_AI_CHAT_MESSAGE_MAX_CODE_POINTS = 2_000;
+const MEAL_AI_CHAT_ASSISTANT_MAX_CODE_POINTS = 1_200;
+const MEAL_AI_CHAT_MAX_ITEMS = 12;
 
 type MealAiAbortSource = 'external' | 'timeout' | null;
 
@@ -162,6 +171,10 @@ function isPositiveSafeInteger(value: unknown): value is number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value > 0;
 }
 
+function isNonNegativeSafeInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
+}
+
 function isPositiveFiniteNumber(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value) && value > 0;
 }
@@ -173,6 +186,32 @@ function isNullableNonNegativeFiniteNumber(value: unknown): value is number | nu
 function hasExactlyKeys(value: Record<string, unknown>, keys: string[]): boolean {
   const actualKeys = Object.keys(value);
   return actualKeys.length === keys.length && keys.every((key) => actualKeys.includes(key));
+}
+
+function isWellFormedUnicode(value: string): boolean {
+  for (let index = 0; index < value.length; index += 1) {
+    const codeUnit = value.charCodeAt(index);
+    if (codeUnit >= 0xd800 && codeUnit <= 0xdbff) {
+      const nextCodeUnit = value.charCodeAt(index + 1);
+      if (!(nextCodeUnit >= 0xdc00 && nextCodeUnit <= 0xdfff)) {
+        return false;
+      }
+      index += 1;
+    } else if (codeUnit >= 0xdc00 && codeUnit <= 0xdfff) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+function isBoundedNonBlankUnicodeString(value: unknown, maximumCodePoints: number): value is string {
+  return (
+    typeof value === 'string' &&
+    value.trim().length > 0 &&
+    isWellFormedUnicode(value) &&
+    Array.from(value).length <= maximumCodePoints
+  );
 }
 
 function parseIntent(value: unknown): MealAiIntent | null {
@@ -690,6 +729,340 @@ function parseResolveResult(value: unknown): MealAiResolveResult | null {
   return null;
 }
 
+function parseChatPurpose(value: unknown): MealAiChatPurpose | null {
+  if (value === 'meal_logging' || value === 'nutrition_query' || value === 'unknown') {
+    return value;
+  }
+
+  return null;
+}
+
+function parseChatAssistant(value: unknown): MealAiChatAssistant | null {
+  if (
+    !isRecord(value) ||
+    !hasExactlyKeys(value, ['kind', 'text']) ||
+    !isBoundedNonBlankUnicodeString(value.text, MEAL_AI_CHAT_ASSISTANT_MAX_CODE_POINTS) ||
+    !(
+      value.kind === 'nutrition_answer' ||
+      value.kind === 'meal_ready' ||
+      value.kind === 'clarification' ||
+      value.kind === 'guidance'
+    )
+  ) {
+    return null;
+  }
+
+  return { kind: value.kind, text: value.text };
+}
+
+function parseChatAmountChoice(value: unknown): MealAiChatAmountChoice | null {
+  if (
+    !isRecord(value) ||
+    !hasExactlyKeys(value, ['kind', 'grams', 'portion_id', 'quantity'])
+  ) {
+    return null;
+  }
+
+  if (
+    value.kind === 'grams' &&
+    isPositiveFiniteNumber(value.grams) &&
+    value.portion_id === null &&
+    value.quantity === null
+  ) {
+    return { kind: 'grams', grams: value.grams };
+  }
+
+  if (
+    value.kind === 'portion' &&
+    value.grams === null &&
+    isPositiveSafeInteger(value.portion_id) &&
+    isPositiveFiniteNumber(value.quantity)
+  ) {
+    return {
+      kind: 'portion',
+      portionId: value.portion_id,
+      quantity: value.quantity,
+    };
+  }
+
+  return null;
+}
+
+function parseChatConversationState(value: unknown): MealAiChatConversationState | null {
+  if (
+    !isRecord(value) ||
+    !hasExactlyKeys(value, ['version', 'purpose', 'items', 'active_item_index']) ||
+    value.version !== 2 ||
+    !Array.isArray(value.items) ||
+    value.items.length > MEAL_AI_CHAT_MAX_ITEMS ||
+    !(
+      value.active_item_index === null ||
+      isNonNegativeSafeInteger(value.active_item_index)
+    )
+  ) {
+    return null;
+  }
+
+  const purpose = parseChatPurpose(value.purpose);
+  if (purpose === null) {
+    return null;
+  }
+
+  const items: MealAiChatConversationState['items'] = [];
+  for (let index = 0; index < value.items.length; index += 1) {
+    const itemValue = value.items[index];
+    if (
+      !isRecord(itemValue) ||
+      !hasExactlyKeys(itemValue, [
+        'position',
+        'evidence',
+        'amount_evidence',
+        'intent',
+        'food_choice_id',
+        'amount_choice',
+      ]) ||
+      itemValue.position !== index ||
+      !isBoundedNonBlankUnicodeString(
+        itemValue.evidence,
+        MEAL_AI_CHAT_MESSAGE_MAX_CODE_POINTS,
+      ) ||
+      !(
+        itemValue.amount_evidence === null ||
+        isBoundedNonBlankUnicodeString(
+          itemValue.amount_evidence,
+          MEAL_AI_CHAT_MESSAGE_MAX_CODE_POINTS,
+        )
+      ) ||
+      !isRecord(itemValue.intent) ||
+      !hasExactlyKeys(itemValue.intent, ['query', 'quantity', 'unit_hint']) ||
+      !(
+        itemValue.food_choice_id === null ||
+        isPositiveSafeInteger(itemValue.food_choice_id)
+      )
+    ) {
+      return null;
+    }
+
+    const intent = parseIntent(itemValue.intent);
+    const amountChoice =
+      itemValue.amount_choice === null
+        ? null
+        : parseChatAmountChoice(itemValue.amount_choice);
+    if (intent === null || (itemValue.amount_choice !== null && amountChoice === null)) {
+      return null;
+    }
+
+    items.push({
+      position: index,
+      evidence: itemValue.evidence,
+      amountEvidence: itemValue.amount_evidence,
+      intent,
+      foodChoiceId: itemValue.food_choice_id,
+      amountChoice,
+    });
+  }
+
+  const activeItemIndex = value.active_item_index;
+  if (activeItemIndex !== null && activeItemIndex >= items.length) {
+    return null;
+  }
+
+  return {
+    version: 2,
+    purpose,
+    items,
+    activeItemIndex,
+  };
+}
+
+function chatIntentsAreEqual(left: MealAiIntent, right: MealAiIntent): boolean {
+  return (
+    left.query === right.query &&
+    left.quantity === right.quantity &&
+    left.unitHint === right.unitHint
+  );
+}
+
+function parseChatResult(value: unknown): MealAiChatResult | null {
+  if (
+    !isRecord(value) ||
+    !hasExactlyKeys(value, [
+      'purpose',
+      'state',
+      'assistant',
+      'items',
+      'active_item_index',
+      'next_state',
+    ]) ||
+    !Array.isArray(value.items) ||
+    value.items.length > MEAL_AI_CHAT_MAX_ITEMS ||
+    !(
+      value.active_item_index === null ||
+      isNonNegativeSafeInteger(value.active_item_index)
+    )
+  ) {
+    return null;
+  }
+
+  const purpose = parseChatPurpose(value.purpose);
+  const assistant = parseChatAssistant(value.assistant);
+  const nextState = parseChatConversationState(value.next_state);
+  if (purpose === null || assistant === null || nextState === null) {
+    return null;
+  }
+
+  const items: MealAiItem[] = [];
+  for (const itemValue of value.items) {
+    if (
+      !isRecord(itemValue) ||
+      !hasExactlyKeys(itemValue, [
+        'mention',
+        'intent',
+        'state',
+        'food',
+        'selection',
+        'preview',
+        'clarification',
+      ])
+    ) {
+      return null;
+    }
+
+    const item = parseItem(itemValue);
+    if (item === null) {
+      return null;
+    }
+    items.push(item);
+  }
+
+  const activeItemIndex = value.active_item_index;
+  if (
+    nextState.purpose !== purpose ||
+    nextState.items.length !== items.length ||
+    nextState.activeItemIndex !== activeItemIndex
+  ) {
+    return null;
+  }
+
+  for (let index = 0; index < items.length; index += 1) {
+    if (
+      nextState.items[index].evidence !== items[index].mention ||
+      !chatIntentsAreEqual(nextState.items[index].intent, items[index].intent)
+    ) {
+      return null;
+    }
+  }
+
+  if (value.state === 'ready') {
+    if (
+      purpose === 'unknown' ||
+      assistant.kind !== (purpose === 'meal_logging' ? 'meal_ready' : 'nutrition_answer') ||
+      items.length === 0 ||
+      items.some((item) => item.state !== 'ready') ||
+      activeItemIndex !== null
+    ) {
+      return null;
+    }
+
+    return {
+      purpose,
+      state: 'ready',
+      assistant,
+      items: items as ReadyMealAiItem[],
+      activeItemIndex: null,
+      nextState,
+    };
+  }
+
+  if (value.state === 'clarification_required') {
+    if (
+      purpose === 'unknown' ||
+      assistant.kind !== 'clarification' ||
+      activeItemIndex === null ||
+      activeItemIndex >= items.length ||
+      items[activeItemIndex].state !== 'clarification_required' ||
+      items.slice(0, activeItemIndex).some((item) => item.state === 'clarification_required')
+    ) {
+      return null;
+    }
+
+    return {
+      purpose,
+      state: 'clarification_required',
+      assistant,
+      items,
+      activeItemIndex,
+      nextState,
+    };
+  }
+
+  if (
+    value.state === 'empty' &&
+    assistant.kind === 'guidance' &&
+    items.length === 0 &&
+    activeItemIndex === null
+  ) {
+    return {
+      purpose,
+      state: 'empty',
+      assistant,
+      items: [],
+      activeItemIndex: null,
+      nextState,
+    };
+  }
+
+  return null;
+}
+
+function serializeChatConversationState(
+  state: MealAiChatConversationState,
+): Record<string, unknown> {
+  const items = state.items.map((item) => {
+    const amountChoice =
+      item.amountChoice === null
+        ? null
+        : item.amountChoice.kind === 'grams'
+          ? {
+              kind: 'grams',
+              grams: item.amountChoice.grams,
+              portion_id: null,
+              quantity: null,
+            }
+          : {
+              kind: 'portion',
+              grams: null,
+              portion_id: item.amountChoice.portionId,
+              quantity: item.amountChoice.quantity,
+            };
+
+    return {
+      position: item.position,
+      evidence: item.evidence,
+      amount_evidence: item.amountEvidence,
+      intent: {
+        query: item.intent.query,
+        quantity: item.intent.quantity,
+        unit_hint: item.intent.unitHint,
+      },
+      food_choice_id: item.foodChoiceId,
+      amount_choice: amountChoice,
+    };
+  });
+
+  const serialized = {
+    version: state.version,
+    purpose: state.purpose,
+    items,
+    active_item_index: state.activeItemIndex,
+  };
+  if (parseChatConversationState(serialized) === null) {
+    throw new ApiError('config', 'The MealAI chat continuation state is invalid.');
+  }
+
+  return serialized;
+}
+
 function validateIntentInput(intent: MealAiIntent): void {
   if (
     !isRecord(intent) ||
@@ -781,6 +1154,48 @@ function serializeChoice(choice: MealAiResolveChoice): Record<string, unknown> {
   }
 
   throw new ApiError('config', 'The meal resolution choice is invalid.');
+}
+
+export async function sendMealAiChatMessage(
+  input: SendMealAiChatMessageInput,
+  signal?: AbortSignal,
+): Promise<MealAiChatResult> {
+  if (
+    !isRecord(input) ||
+    !hasExactlyKeys(input, ['message', 'locale', 'state']) ||
+    !isBoundedNonBlankUnicodeString(
+      input.message,
+      MEAL_AI_CHAT_MESSAGE_MAX_CODE_POINTS,
+    ) ||
+    !isNonBlankString(input.locale) ||
+    !(input.state === null || isRecord(input.state))
+  ) {
+    throw new ApiError('config', 'The MealAI chat input is invalid.');
+  }
+
+  const state =
+    input.state === null
+      ? null
+      : serializeChatConversationState(input.state as MealAiChatConversationState);
+  const { data, httpStatus, requestId } = await postMealAiJson(
+    '/ai/meals/chat',
+    {
+      message: input.message,
+      locale: input.locale,
+      state,
+    },
+    signal,
+  );
+
+  const result = parseChatResult(data);
+  if (result === null) {
+    throw new ApiError('invalid-response', 'The MealAI chat response is invalid.', {
+      httpStatus,
+      requestId,
+    });
+  }
+
+  return result;
 }
 
 export async function interpretMealText(

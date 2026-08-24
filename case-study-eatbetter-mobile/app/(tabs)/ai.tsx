@@ -8,18 +8,14 @@ import {
   ScrollView,
   StyleSheet,
   Text,
-  TextInput,
   View,
 } from 'react-native';
 
 import type { MealItem } from '../../src/domain/meal';
 import type {
   ClarificationRequiredImageMealAiItem,
-  ClarificationRequiredMealAiItem,
   FoodIdentityClarificationImageMealAiItem,
-  FoodIdentityClarificationMealAiItem,
   ReadyImageMealAiItem,
-  ReadyMealAiItem,
 } from '../../src/domain/mealAi';
 import type { PreparedMealImage } from '../../src/domain/mealImage';
 import { createLocalMealRecord } from '../../src/domain/mealRecord';
@@ -29,6 +25,7 @@ import {
 } from '../../src/features/mealAi/AmountClarificationCard';
 import { FoodIdentityClarificationCard } from '../../src/features/mealAi/FoodIdentityClarificationCard';
 import { MealImageInputCard } from '../../src/features/mealAi/MealImageInputCard';
+import { MealAiChatPanel } from '../../src/features/mealAi/MealAiChatPanel';
 import {
   mapReadyMealAiItemToMealItem,
 } from '../../src/features/mealAi/mapReadyMealAiItemToMealItem';
@@ -49,19 +46,18 @@ type SaveStatus = 'idle' | 'saving' | 'error' | 'success';
 type MealAiInputMode = 'text' | 'image';
 
 type ClarificationRequiredSessionItem =
-  | ClarificationRequiredMealAiItem
-  | ClarificationRequiredImageMealAiItem;
+  ClarificationRequiredImageMealAiItem;
 
 function isFoodIdentityClarificationItem(
   item: ClarificationRequiredSessionItem,
-): item is FoodIdentityClarificationMealAiItem | FoodIdentityClarificationImageMealAiItem {
+): item is FoodIdentityClarificationImageMealAiItem {
   return item.clarification.kind === 'food_identity';
 }
 
 function ReadyMealAiItemCard({
   item,
 }: {
-  item: ReadyMealAiItem | ReadyImageMealAiItem;
+  item: ReadyImageMealAiItem;
 }) {
   return (
     <View style={[styles.itemCard, styles.readyItemCard]}>
@@ -73,13 +69,17 @@ function ReadyMealAiItemCard({
 }
 
 function mapFullyReadySessionToMealItems(state: MealAiSessionState): MealItem[] | null {
-  if (state.status !== 'active' || !isMealAiSessionFullyReady(state)) {
+  if (
+    state.status !== 'active' ||
+    state.source !== 'image' ||
+    !isMealAiSessionFullyReady(state)
+  ) {
     return null;
   }
 
   const mealItems: MealItem[] = [];
   for (const sessionItem of state.items) {
-    if (sessionItem.item.state !== 'ready') {
+    if (sessionItem.source !== 'image' || sessionItem.item.state !== 'ready') {
       return null;
     }
 
@@ -90,33 +90,26 @@ function mapFullyReadySessionToMealItems(state: MealAiSessionState): MealItem[] 
 }
 
 export default function AiScreen() {
-  const { state, interpretText, interpretImage, reset, resolveItem } = useMealAiSession();
+  const { state, interpretImage, reset, resolveItem } = useMealAiSession();
   const imageInput = useMealImageInput();
   const { addMeal, hydrationStatus } = useMeals();
   const [inputMode, setInputMode] = useState<MealAiInputMode>('text');
-  const [draft, setDraft] = useState('');
+  const [textSessionIsPristine, setTextSessionIsPristine] = useState(true);
   const [saveStatus, setSaveStatus] = useState<SaveStatus>('idle');
-  const lastSubmittedTextRef = useRef<string | null>(null);
   const lastSubmittedImageRef = useRef<PreparedMealImage | null>(null);
-  const completedSessionInvalidatedRef = useRef(false);
   const interpretCommandInFlightRef = useRef(false);
   const saveInFlightRef = useRef(false);
   const invalidatedReviewItemsRef = useRef(new WeakSet<MealAiSessionItem[]>());
   const mountedRef = useRef(true);
+  const scrollViewRef = useRef<ScrollView>(null);
 
-  const isInterpreting = state.status === 'interpreting';
   const saveIsRunning = saveStatus === 'saving';
   const imageInputIsBusy = imageInput.operation !== 'idle';
   const canSwitchMode =
     state.status === 'idle' &&
+    textSessionIsPristine &&
     !imageInputIsBusy &&
     !interpretCommandInFlightRef.current &&
-    !saveIsRunning;
-  const canSubmitText =
-    inputMode === 'text' &&
-    state.status === 'idle' &&
-    draft.trim().length > 0 &&
-    !imageInputIsBusy &&
     !saveIsRunning;
   const canManageImageInput =
     inputMode === 'image' &&
@@ -125,17 +118,15 @@ export default function AiScreen() {
     !saveIsRunning;
   const canInterpretImage =
     canManageImageInput && imageInput.image !== null && !imageInputIsBusy;
-  const retryText = lastSubmittedTextRef.current;
   const retryImage = lastSubmittedImageRef.current;
   const interpretErrorPresentation =
     state.status === 'error' ? getMealAiErrorPresentation(state.error) : null;
   const canRetry =
     state.status === 'error' &&
+    state.source === 'image' &&
     interpretErrorPresentation?.retryable === true &&
-    ((state.source === 'text' && retryText !== null && retryText.trim().length > 0) ||
-      (state.source === 'image' &&
-        retryImage !== null &&
-        imageInput.image === retryImage)) &&
+    retryImage !== null &&
+    imageInput.image === retryImage &&
     !saveIsRunning;
   const readyMealItems = useMemo(() => mapFullyReadySessionToMealItems(state), [state]);
 
@@ -146,22 +137,6 @@ export default function AiScreen() {
       mountedRef.current = false;
     };
   }, []);
-
-  const runTextInterpret = useCallback(
-    async (submittedText: string) => {
-      if (interpretCommandInFlightRef.current) {
-        return;
-      }
-
-      interpretCommandInFlightRef.current = true;
-      try {
-        await interpretText(submittedText, MEAL_AI_LOCALE);
-      } finally {
-        interpretCommandInFlightRef.current = false;
-      }
-    },
-    [interpretText],
-  );
 
   const runImageInterpret = useCallback(
     async (submittedImage: PreparedMealImage) => {
@@ -187,20 +162,6 @@ export default function AiScreen() {
     ],
   );
 
-  const submitDraft = useCallback(async () => {
-    if (!canSubmitText || interpretCommandInFlightRef.current || saveInFlightRef.current) {
-      return;
-    }
-
-    const submittedText = draft;
-    lastSubmittedTextRef.current = submittedText;
-    lastSubmittedImageRef.current = null;
-    completedSessionInvalidatedRef.current = false;
-    setSaveStatus('idle');
-    Keyboard.dismiss();
-    await runTextInterpret(submittedText);
-  }, [canSubmitText, draft, runTextInterpret]);
-
   const submitImage = useCallback(async () => {
     const submittedImage = imageInput.image;
     if (
@@ -213,18 +174,16 @@ export default function AiScreen() {
     }
 
     lastSubmittedImageRef.current = submittedImage;
-    lastSubmittedTextRef.current = null;
-    completedSessionInvalidatedRef.current = false;
     setSaveStatus('idle');
     Keyboard.dismiss();
     await runImageInterpret(submittedImage);
   }, [canInterpretImage, imageInput.image, runImageInterpret]);
 
   const retryInterpretation = useCallback(async () => {
-    const submittedText = lastSubmittedTextRef.current;
     const submittedImage = lastSubmittedImageRef.current;
     if (
       state.status !== 'error' ||
+      state.source !== 'image' ||
       !getMealAiErrorPresentation(state.error).retryable ||
       interpretCommandInFlightRef.current ||
       saveInFlightRef.current
@@ -232,21 +191,12 @@ export default function AiScreen() {
       return;
     }
 
-    completedSessionInvalidatedRef.current = false;
     setSaveStatus('idle');
     Keyboard.dismiss();
-    if (state.source === 'text') {
-      if (submittedText === null || submittedText.trim().length === 0) {
-        return;
-      }
-      await runTextInterpret(submittedText);
-      return;
-    }
-
     if (submittedImage !== null && imageInput.image === submittedImage) {
       await runImageInterpret(submittedImage);
     }
-  }, [imageInput.image, runImageInterpret, runTextInterpret, state]);
+  }, [imageInput.image, runImageInterpret, state]);
 
   const switchInputMode = useCallback(
     (nextMode: MealAiInputMode) => {
@@ -274,35 +224,6 @@ export default function AiScreen() {
     [canSwitchMode, imageInput.clearImage, imageInput.operation, inputMode],
   );
 
-  const updateDraft = useCallback(
-    (nextDraft: string) => {
-      if (interpretCommandInFlightRef.current || saveInFlightRef.current) {
-        return;
-      }
-
-      if (nextDraft !== draft) {
-        setSaveStatus('idle');
-      }
-
-      if (
-        nextDraft !== draft &&
-        (state.status === 'active' || state.status === 'empty' || state.status === 'error') &&
-        !completedSessionInvalidatedRef.current
-      ) {
-        if (state.status === 'active') {
-          invalidatedReviewItemsRef.current.add(state.items);
-        }
-
-        completedSessionInvalidatedRef.current = true;
-        lastSubmittedTextRef.current = null;
-        reset();
-      }
-
-      setDraft(nextDraft);
-    },
-    [draft, reset, state],
-  );
-
   const startNewEntry = useCallback(() => {
     if (interpretCommandInFlightRef.current || saveInFlightRef.current) {
       return;
@@ -314,11 +235,8 @@ export default function AiScreen() {
 
     reset();
     imageInput.clearImage();
-    setDraft('');
     setSaveStatus('idle');
-    lastSubmittedTextRef.current = null;
     lastSubmittedImageRef.current = null;
-    completedSessionInvalidatedRef.current = false;
     interpretCommandInFlightRef.current = false;
     Keyboard.dismiss();
   }, [imageInput.clearImage, reset, state]);
@@ -390,10 +308,7 @@ export default function AiScreen() {
       invalidatedReviewItemsRef.current.add(state.items);
       reset();
       imageInput.clearImage();
-      setDraft('');
-      lastSubmittedTextRef.current = null;
       lastSubmittedImageRef.current = null;
-      completedSessionInvalidatedRef.current = false;
       interpretCommandInFlightRef.current = false;
       setSaveStatus('success');
       Keyboard.dismiss();
@@ -414,6 +329,12 @@ export default function AiScreen() {
       <ScrollView
         contentContainerStyle={styles.container}
         keyboardShouldPersistTaps="handled"
+        onContentSizeChange={() => {
+          if (inputMode === 'text') {
+            scrollViewRef.current?.scrollToEnd({ animated: true });
+          }
+        }}
+        ref={scrollViewRef}
         showsVerticalScrollIndicator={false}
       >
         <View style={styles.header}>
@@ -470,46 +391,7 @@ export default function AiScreen() {
         </View>
 
         {inputMode === 'text' ? (
-          <View style={styles.entryCard}>
-            <Text style={styles.inputLabel}>Öğün açıklaması</Text>
-            <TextInput
-              accessibilityLabel="Öğün açıklaması"
-              autoCapitalize="sentences"
-              autoCorrect
-              editable={!isInterpreting && !saveIsRunning}
-              multiline
-              onChangeText={updateDraft}
-              placeholder="Örn. 2 yumurta ve 200 g tavuk yedim."
-              placeholderTextColor="#87928e"
-              style={[
-                styles.input,
-                (isInterpreting || saveIsRunning) && styles.inputDisabled,
-              ]}
-              textAlignVertical="top"
-              value={draft}
-            />
-
-            <Pressable
-              accessibilityRole="button"
-              accessibilityState={{ disabled: !canSubmitText }}
-              disabled={!canSubmitText}
-              onPress={() => void submitDraft()}
-              style={({ pressed }) => [
-                styles.primaryButton,
-                !canSubmitText && styles.primaryButtonDisabled,
-                pressed && canSubmitText && styles.buttonPressed,
-              ]}
-            >
-              <Text
-                style={[
-                  styles.primaryButtonText,
-                  !canSubmitText && styles.primaryButtonTextDisabled,
-                ]}
-              >
-                Yorumla
-              </Text>
-            </Pressable>
-          </View>
+          <MealAiChatPanel onPristineChange={setTextSessionIsPristine} />
         ) : (
           <MealImageInputCard
             canInterpret={canInterpretImage}
@@ -524,6 +406,8 @@ export default function AiScreen() {
           />
         )}
 
+        {inputMode === 'image' ? (
+          <>
         {saveStatus === 'success' ? (
           <View accessibilityLiveRegion="polite" style={[styles.stateCard, styles.successCard]}>
             <Text style={styles.successTitle}>Öğün günlüğe eklendi.</Text>
@@ -602,7 +486,7 @@ export default function AiScreen() {
           </View>
         ) : null}
 
-        {state.status === 'active' ? (
+        {state.status === 'active' && state.source === 'image' ? (
           <View accessibilityLiveRegion="polite" style={styles.stateCard}>
             {readyMealItems !== null ? (
               <MealAiReviewCard
@@ -619,6 +503,9 @@ export default function AiScreen() {
                 </Text>
                 <View style={styles.sessionItems}>
                   {state.items.map((sessionItem, itemIndex) => {
+                    if (sessionItem.source !== 'image') {
+                      return null;
+                    }
                     const item = sessionItem.item;
 
                     if (item.state === 'ready') {
@@ -671,6 +558,8 @@ export default function AiScreen() {
               </Text>
             </Pressable>
           </View>
+        ) : null}
+          </>
         ) : null}
       </ScrollView>
     </KeyboardAvoidingView>

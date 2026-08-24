@@ -31,6 +31,9 @@ func buildAssistantResponse(baseLocale string, result ChatResult) (AssistantResp
 		if result.ActiveItemIndex != nil || len(result.Items) == 0 {
 			return AssistantResponse{}, fmt.Errorf("malformed ready assistant context")
 		}
+		if err := validateReadyAssistantItems(result.Items); err != nil {
+			return AssistantResponse{}, err
+		}
 		switch result.Purpose {
 		case ChatPurposeNutritionQuery:
 			return AssistantResponse{Kind: AssistantNutritionAnswer, Text: nutritionAnswerText(result.Items, turkish)}, nil
@@ -50,7 +53,7 @@ func buildAssistantResponse(baseLocale string, result ChatResult) (AssistantResp
 		if active.State != ItemClarificationRequired || active.Clarification == nil {
 			return AssistantResponse{}, fmt.Errorf("active item has no clarification")
 		}
-		text, err := clarificationText(active, turkish)
+		text, err := clarificationText(result.Purpose, active, turkish)
 		if err != nil {
 			return AssistantResponse{}, err
 		}
@@ -151,12 +154,30 @@ func nutritionAnswerText(items []Item, turkish bool) string {
 	return sentence
 }
 
-func clarificationText(item Item, turkish bool) (string, error) {
+func validateReadyAssistantItems(items []Item) error {
+	for index, item := range items {
+		if item.State != ItemReady || item.Food == nil || item.Selection == nil || item.Preview == nil || item.Clarification != nil {
+			return fmt.Errorf("items[%d] is not a complete ready item", index)
+		}
+		if item.Food.FoodID <= 0 || item.Selection.FoodID != item.Food.FoodID {
+			return fmt.Errorf("items[%d] has inconsistent food identity", index)
+		}
+		if err := validateSelection(item.Selection); err != nil {
+			return fmt.Errorf("items[%d] has invalid selection: %w", index, err)
+		}
+		if !finitePositive(item.Preview.ResolvedGrams) {
+			return fmt.Errorf("items[%d] has invalid resolved grams", index)
+		}
+	}
+	return nil
+}
+
+func clarificationText(purpose ChatPurpose, item Item, turkish bool) (string, error) {
 	switch item.Clarification.Kind {
 	case ClarificationFoodIdentity:
 		return identityClarificationText(item.Clarification.Candidates, turkish), nil
 	case ClarificationAmount:
-		return amountClarificationText(item, turkish), nil
+		return amountClarificationText(purpose, item, turkish), nil
 	default:
 		return "", fmt.Errorf("unknown clarification kind")
 	}
@@ -186,11 +207,23 @@ func identityClarificationText(candidates []FoodOption, turkish bool) string {
 	return "Which one did you mean: " + strings.Join(names, ", ") + "?"
 }
 
-func amountClarificationText(item Item, turkish bool) string {
+func amountClarificationText(purpose ChatPurpose, item Item, turkish bool) string {
 	name := userFacingFoodName(item.Food)
 	portionHint := trustedPortionHint(item.Clarification.Portions)
 	switch foodamount.Reason(item.Clarification.Reason) {
 	case foodamount.ReasonQuantityRequired:
+		if purpose == ChatPurposeNutritionQuery {
+			if portionHint == "" {
+				if turkish {
+					return "Hangi miktar için hesaplayayım? Gram olarak belirtebilirsin."
+				}
+				return "What amount should I calculate for? You can specify grams."
+			}
+			if turkish {
+				return fmt.Sprintf("Hangi miktar için hesaplayayım? Gram olarak veya mevcut porsiyonlardan biriyle belirtebilirsin: %s.", portionHint)
+			}
+			return fmt.Sprintf("What amount should I calculate for? You can use grams or one of these available portions: %s.", portionHint)
+		}
 		if portionHint == "" {
 			if turkish {
 				return fmt.Sprintf("%s için yaklaşık kaç gram yedin?", name)

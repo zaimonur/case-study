@@ -132,6 +132,103 @@ func TestAssistantAmountPolicyUsesReasonAndTrustedPortions(t *testing.T) {
 	}
 }
 
+func TestAssistantQuantityClarificationIsPurposeAware(t *testing.T) {
+	active := 0
+	for _, test := range []struct {
+		name     string
+		purpose  ChatPurpose
+		locale   string
+		portions []food.Portion
+		contains []string
+		excludes []string
+	}{
+		{
+			name: "turkish nutrition query", purpose: ChatPurposeNutritionQuery, locale: "tr",
+			contains: []string{"Hangi miktar için hesaplayayım", "Gram"}, excludes: []string{"yedin"},
+		},
+		{
+			name: "english nutrition query", purpose: ChatPurposeNutritionQuery, locale: "en",
+			contains: []string{"What amount should I calculate for", "grams"}, excludes: []string{"did you eat"},
+		},
+		{
+			name: "trusted portions only", purpose: ChatPurposeNutritionQuery, locale: "tr",
+			portions: []food.Portion{{ID: 1, FoodID: 7, Amount: 1, Measure: "dilim", Grams: 30}},
+			contains: []string{"dilim"}, excludes: []string{"bardak", "yedin"},
+		},
+		{
+			name: "meal logging regression", purpose: ChatPurposeMealLogging, locale: "tr",
+			contains: []string{"yedin", "gram"}, excludes: []string{"Hangisini"},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			item := Item{
+				State: ItemClarificationRequired,
+				Food:  &ResolvedFood{FoodID: 7, DisplayName: "Elma", CanonicalName: "Apple"},
+				Clarification: &Clarification{
+					Kind: ClarificationAmount, Reason: string(foodamount.ReasonQuantityRequired),
+					Candidates: []FoodOption{}, Portions: test.portions, AllowDirectGrams: true,
+				},
+			}
+			assistant, err := buildAssistantResponse(test.locale, ChatResult{
+				Purpose: test.purpose, State: StateClarificationRequired, Items: []Item{item}, ActiveItemIndex: &active,
+			})
+			if err != nil || assistant.Kind != AssistantClarification {
+				t.Fatalf("assistant/error = %#v / %v", assistant, err)
+			}
+			for _, expected := range test.contains {
+				if !strings.Contains(assistant.Text, expected) {
+					t.Fatalf("assistant %q does not contain %q", assistant.Text, expected)
+				}
+			}
+			for _, excluded := range test.excludes {
+				if strings.Contains(assistant.Text, excluded) {
+					t.Fatalf("assistant %q contains %q", assistant.Text, excluded)
+				}
+			}
+		})
+	}
+}
+
+func TestAssistantReadyItemsFailClosedWhenMalformed(t *testing.T) {
+	valid := Item{
+		State: ItemReady,
+		Food:  &ResolvedFood{FoodID: 7, DisplayName: "Elma", CanonicalName: "Apple"},
+		Selection: &foodamount.Selection{
+			Kind: foodamount.SelectionGrams, FoodID: 7, Grams: &foodamount.GramsSelection{Grams: 100},
+		},
+		Preview: &NutritionPreview{ResolvedGrams: 100},
+	}
+	for _, test := range []struct {
+		name   string
+		mutate func(*Item)
+	}{
+		{name: "missing preview", mutate: func(item *Item) { item.Preview = nil }},
+		{name: "missing selection", mutate: func(item *Item) { item.Selection = nil }},
+		{name: "missing food", mutate: func(item *Item) { item.Food = nil }},
+		{name: "mismatched selection food", mutate: func(item *Item) { item.Selection.FoodID = 8 }},
+		{name: "invalid resolved grams", mutate: func(item *Item) { item.Preview.ResolvedGrams = 0 }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			item := valid
+			selection := *valid.Selection
+			grams := *valid.Selection.Grams
+			selection.Grams = &grams
+			preview := *valid.Preview
+			item.Selection, item.Preview = &selection, &preview
+			test.mutate(&item)
+			result := ChatResult{
+				Purpose: ChatPurposeNutritionQuery, State: StateReady, Items: []Item{item},
+			}
+			if _, err := buildAssistantResponse("tr", result); err == nil {
+				t.Fatal("malformed ready item was accepted")
+			}
+			if _, err := finalizeChatResult("tr", result); !IsKind(err, ErrorResolutionFailure) {
+				t.Fatalf("finalize error = %v", err)
+			}
+		})
+	}
+}
+
 func TestAssistantAsksOnlyFirstUnresolvedItem(t *testing.T) {
 	active := 1
 	ready := Item{State: ItemReady, Food: &ResolvedFood{FoodID: 1, DisplayName: "Elma"}, Selection: &foodamount.Selection{}, Preview: &NutritionPreview{}}

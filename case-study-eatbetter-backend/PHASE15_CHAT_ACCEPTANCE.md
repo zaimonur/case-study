@@ -1,6 +1,6 @@
 # Phase 15 Chat V2 — Task 4 Acceptance
 
-Recorded on 2026-08-24. `PASS`, `SKIPPED`, and `NOT RUN` are used literally; no live or manual result is inferred from deterministic tests.
+Recorded on 2026-08-24. `PASS` and `SKIPPED` are used literally; no live or manual result is inferred from deterministic tests.
 
 ## Automated acceptance
 
@@ -28,34 +28,36 @@ It only calls `POST /ai/meals/chat`; it does not persist meals or mutate the dat
 
 ## Live smoke matrix
 
-The command was invoked against the default `http://localhost:8080` with a five-second per-request timeout. The local API was unavailable and all attempted HTTP calls returned `transport_failure`. The live acceptance cases are therefore `NOT RUN`, not product `FAIL`.
+The later required live smoke run against the local API is the final Task 4 live acceptance result. An earlier attempt encountered transient provider rate limiting; that infrastructure failure is not counted as a product failure.
 
-| Case | Status | Required live expectation |
-| --- | --- | --- |
-| A — direct nutrition query | NOT RUN | `nutrition_query`, READY, `nutrition_answer`, target resolved to 150 g |
-| B — direct meal logging | NOT RUN | `meal_logging`, READY, `meal_ready`, target resolved to 150 g |
-| C — two-turn identity regression | NOT RUN | Amount clarification, exact returned state replay, READY at 150 g with unchanged FoodID |
-| D — food identity/rephrase | SKIPPED | No production-data phrase is currently declared stable enough for a safe live identity/rephrase assertion; deterministic tests cover constrained candidates and zero-candidate rephrase |
-| E — multi-food | NOT RUN | Multiple items in source order; READY or first-unresolved clarification is accepted |
-| F — irrelevant/unknown | NOT RUN | `unknown`, EMPTY, `guidance`, zero items |
+| Case | Status | HTTP | Purpose | State | Assistant kind | Items / reason |
+| --- | --- | ---: | --- | --- | --- | --- |
+| A — `direct_nutrition_query` | PASS | 200 | `nutrition_query` | `ready` | `nutrition_answer` | 1 item |
+| B — `direct_meal_logging` | PASS | 200 | `meal_logging` | `ready` | `meal_ready` | 1 item |
+| C — `amount_continuation_identity_regression` | PASS | 200 | `meal_logging` | `ready` | `meal_ready` | 1 item |
+| D — `food_identity_rephrase` | SKIPPED | — | — | — | — | `prerequisite_unavailable`; no stable deterministic production-data fixture |
+| E — `multi_food` | PASS | 200 | `meal_logging` | `clarification_required` | `clarification` | 2 items |
+| F — `irrelevant_unknown` | PASS | 200 | `unknown` | `empty` | `guidance` | 0 items |
+
+Summary: 6 total, 5 passed, 0 failed, 1 skipped, and 0 required failures.
 
 ## Manual mobile acceptance checklist
 
-No simulator or physical-device scenario below was performed during this pass. Every row remains `NOT RUN` until a person executes it and records the observed result.
+The following statuses record the scenarios that were actually verified. They do not imply exhaustive device or camera coverage.
 
-| Scenario | Status | Concrete checks |
+| Scenario | Status | Verified result |
 | --- | --- | --- |
-| 1. Nutrition query: `150 g az yağlı krem peynir kaç kalori?` | NOT RUN | One user bubble; backend assistant answer; trusted nutrition result; no save action |
-| 2. Direct logging: `150 g az yağlı krem peynir yedim.` | NOT RUN | READY review; `Günlüğe Ekle`; save succeeds once; transcript stays visible; record appears in Günlük |
-| 3. Missing amount, then `150 g` | NOT RUN | Amount clarification; free-text continuation; identity remains Az yağlı krem peynir; READY with same FoodID |
-| 4. Identity/rephrase | NOT RUN | Free text remains available; shortcut creates a normal user bubble; no legacy `/resolve` UI behavior; zero-candidate reply works |
-| 5. Multi-food | NOT RUN | Multiple items shown; shortcuts only on active unresolved item; backend determines clarification order |
-| 6. Failed initial turn/retry | NOT RUN | Stop backend, send once, restart, Retry; one user bubble; no failed assistant bubble; one successful assistant response |
-| 7. Failed continuation/retry | NOT RUN | Commit clarification, stop backend, send `150 g`, restart, Retry; prior chat stays; reply appears once; original continuation state is reused |
-| 8. New chat | NOT RUN | Transcript, committed result, and continuation state clear; next message is an initial turn |
-| 9. Text/image lifecycle | NOT RUN | Pristine text can switch to photo; active text cannot; `Yeni sohbet` re-enables switching; image `Yeni giriş` clears image state and remains in image mode |
-| 10. Image regression | NOT RUN | Gallery; camera where available; preparation; `/interpret-image`; clarification; retry; READY review; persistence; never migrates to `/chat` |
-| 11. Keyboard/scroll | NOT RUN | In 3–4 turns, latest content and loading remain visible/reachable; composer works with keyboard open; no competing vertical scroll makes chat unusable |
+| 1. Nutrition query: `150 g az yağlı krem peynir kaç kalori?` | PASS | Trusted nutrition result displayed at 150 g; no meal-save action |
+| 2. Direct logging: `150 g az yağlı krem peynir yedim.` | PASS | READY result; meal persisted successfully |
+| 3. Missing amount → `150 g` | PASS | Amount clarification and free-text continuation completed; low-fat cream-cheese specificity and the same FoodID were preserved; result became READY at 150 g |
+| 4. Food identity/rephrase | SKIPPED | No stable live production-data fixture is declared for a deterministic assertion; tests cover constrained candidate selection, zero-candidate rephrase, and trusted pipeline rerun after rephrase |
+| 5. Multi-food | PASS | 150 g low-fat cream cheese and 150 g low-sodium fluid milk both resolved with their amounts and were persisted together |
+| 6. Failed initial turn/retry | PASS | Failed initial request remained retryable; retry completed; no duplicate failed assistant output was committed |
+| 7. Failed continuation/retry | PASS | Prior conversation remained intact; original continuation state was reused; retry completed without duplicate output |
+| 8. New chat | PASS | Transcript, committed result, and continuation state reset; the next text message behaved as a new initial turn |
+| 9. Text/image lifecycle | PASS | Pristine text could switch to image; active text prevented accidental switching; New Chat restored availability; image New Input cleared image state without migrating into text chat |
+| 10. Image regression | PASS | Existing image MealAI flow remained functional and separate from `/chat`; no exhaustive camera/device claim is made |
+| 11. Keyboard/scroll | PASS | A 3–4 turn interaction remained usable; latest content/loading stayed reachable and the composer remained usable with keyboard interaction |
 
 ## Mobile static validation
 
@@ -64,12 +66,18 @@ No simulator or physical-device scenario below was performed during this pass. E
 | `npm run typecheck` | PASS |
 | `npx expo-doctor` | PASS — 21/21 checks |
 
-Static inspection found the intended mode lifecycle guards: active text marks the session non-pristine, `Yeni sohbet` restores pristine state, and image `Yeni giriş` does not assign text mode. This is not a manual PASS; scenario 9 still requires simulator/device reproduction.
+Static inspection separately found the intended mode lifecycle guards: active text marks the session non-pristine, `Yeni sohbet` restores pristine state, and image `Yeni giriş` does not assign text mode. The later manual result for scenario 9 is recorded independently above.
+
+## Task 6 accuracy evaluation
+
+Later Task 6 work added the frozen `mealai-chat-v1` labeled dataset, an automated evaluator, the first `COMPLETE` measured baseline, and an offline failure analysis. This is a separate accuracy/evaluation evidence surface, not another Task 4 acceptance PASS; the complete baseline contains measured product failures. See [`docs/phase15-ai-accuracy-evaluation.md`](docs/phase15-ai-accuracy-evaluation.md).
 
 ## Known limitations intentionally left
 
-- The local live API/provider/data environment was unavailable, so live behavior is not accepted yet.
-- Food-identity/rephrase remains optional in the live tool until a stable production-data prerequisite is declared; resolver behavior was not distorted to create one.
-- All simulator/device checks, including camera and persistence, remain `NOT RUN`.
-- Raw stored-portion measure text such as `cup`, `tbsp`, or `whipped` was not changed; no functional ambiguity was reproduced.
-- No chat persistence, streaming, retrieval/RAG, evaluation dataset, accuracy metric, mobile test framework, or broad cleanup was added.
+- Live food-identity/rephrase acceptance remains `SKIPPED` because no stable deterministic production-data fixture is declared; retrieval/resolver behavior was not distorted to manufacture a live PASS.
+- Chat history is not persisted as a durable server-side conversation.
+- Chat responses are not streamed.
+- Semantic retrieval, RAG, embeddings, and pgvector are not implemented.
+- No mobile automated test framework was added.
+- Raw source-native portion wording such as `cup`, `tbsp`, or `whipped` was not turned into a localization subsystem.
+- The Task 6 evaluation corpus is intentionally small; detailed accuracy limitations remain in the dedicated Task 6C document.

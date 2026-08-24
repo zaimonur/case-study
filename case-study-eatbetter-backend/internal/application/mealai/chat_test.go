@@ -310,12 +310,37 @@ func TestChatPortionContinuationReusesPriorExplicitQuantity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	continued, err := service.Chat(context.Background(), ChatRequest{Message: "dilim olarak", Locale: "tr", State: &initial.NextState})
+	continued, err := service.Chat(context.Background(), ChatRequest{Message: "dilim olarak, saat 3'te yedim", Locale: "tr", State: &initial.NextState})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if continued.State != StateReady || amount.portionCalls != 1 || amount.portionRequests[0].Quantity != 2 || calculator.calls != 1 || continued.Items[0].Preview.ResolvedGrams != 60 {
 		t.Fatalf("continued/portion/calculator = %#v / %#v / %d", continued, amount.portionRequests, calculator.calls)
+	}
+}
+
+func TestChatPortionContinuationDoesNotReuseMeasurementAsCount(t *testing.T) {
+	originalQuantity := 150.0
+	intent := foodintent.FoodIntent{Query: "ekmek", Quantity: &originalQuantity}
+	portionID := int64(21)
+	portion := food.Portion{ID: portionID, FoodID: 7, Amount: 1, Measure: "dilim", Grams: 30}
+	chat := &fakeChatInterpreter{
+		initial:   mealchat.InitialInterpretation{Purpose: mealchat.PurposeMealLogging, Items: []mealchat.InitialItem{{Evidence: "150 g ekmek", Intent: intent}}},
+		decisions: []mealchat.ContinuationDecision{{Kind: mealchat.ContinuationPortion, PortionID: &portionID}},
+	}
+	resolver := &fakeFoodResolver{results: []foodresolver.Resolution{resolvedIdentity(7, "Ekmek", "Bread", nil), resolvedIdentity(7, "Ekmek", "Bread", nil)}}
+	clarification := foodamount.Resolution{State: foodamount.StateClarificationRequired, Reason: foodamount.ReasonUnsupportedUnitRequiresClarification, Clarification: &foodamount.Clarification{Portions: []food.Portion{portion}, AllowDirectGrams: true}}
+	amount := &fakeAmountResolver{results: []foodamount.Resolution{clarification, clarification}}
+	calculator := &fakeNutritionCalculator{}
+	service := NewService(&fakeTextExtractor{}, nil, resolver, amount, &fakeFoodDetailer{}, calculator, chat)
+
+	initial, err := service.Chat(context.Background(), ChatRequest{Message: "150 g ekmek yedim", Locale: "tr"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	continued, err := service.Chat(context.Background(), ChatRequest{Message: "dilim olarak", Locale: "tr", State: &initial.NextState})
+	if err != nil || continued.State != StateClarificationRequired || continued.ActiveItemIndex == nil || amount.portionCalls != 0 || calculator.calls != 0 {
+		t.Fatalf("continued/error/portion/calculator = %#v / %v / %d / %d", continued, err, amount.portionCalls, calculator.calls)
 	}
 }
 

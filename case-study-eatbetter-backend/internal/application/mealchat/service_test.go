@@ -253,6 +253,97 @@ func TestPortionDecisionReusesOrOverridesValidatedOriginalQuantity(t *testing.T)
 	}
 }
 
+func TestPortionDecisionReusesOnlyValidatedBareCount(t *testing.T) {
+	portionID := int64(21)
+	for _, test := range []struct {
+		name             string
+		originalEvidence string
+		query            string
+		originalQuantity float64
+		latestMessage    string
+		measure          string
+		wantKind         ContinuationKind
+		wantQuantity     float64
+	}{
+		{name: "mass is not a count", originalEvidence: "150 g tavuk", query: "tavuk", originalQuantity: 150, latestMessage: "dilim olarak", measure: "dilim", wantKind: ContinuationUnresolved},
+		{name: "compact volume is not a count", originalEvidence: "200ml süt", query: "süt", originalQuantity: 200, latestMessage: "bardak olarak", measure: "bardak", wantKind: ContinuationUnresolved},
+		{name: "compact mass is not a count", originalEvidence: "2kg tavuk", query: "tavuk", originalQuantity: 2, latestMessage: "dilim", measure: "dilim", wantKind: ContinuationUnresolved},
+		{name: "household measure is not a count", originalEvidence: "2 dilim ekmek", query: "ekmek", originalQuantity: 2, latestMessage: "bardak olarak", measure: "bardak", wantKind: ContinuationUnresolved},
+		{name: "bare count remains reusable", originalEvidence: "2 ekmek", query: "ekmek", originalQuantity: 2, latestMessage: "dilim olarak", measure: "dilim", wantKind: ContinuationPortion, wantQuantity: 2},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			request := ContinuationRequest{
+				Message: test.latestMessage, Kind: ClarificationAmount,
+				OriginalEvidence: test.originalEvidence,
+				OriginalIntent:   foodintent.FoodIntent{Query: test.query, Quantity: &test.originalQuantity},
+				ResolvedFood:     &ResolvedFood{FoodID: 7, DisplayName: "Yiyecek", CanonicalName: "Food"},
+				Candidates:       []FoodCandidate{},
+				Portions:         []food.Portion{{ID: portionID, FoodID: 7, Amount: 1, Measure: test.measure, Grams: 30}},
+			}
+			decision, err := NewService(&stubInterpreter{continuation: ContinuationDecision{Kind: ContinuationPortion, PortionID: &portionID}}).
+				InterpretContinuation(context.Background(), request)
+			if err != nil {
+				t.Fatalf("InterpretContinuation: %v", err)
+			}
+			if decision.Kind != test.wantKind {
+				t.Fatalf("decision = %#v, want kind %s", decision, test.wantKind)
+			}
+			if test.wantKind == ContinuationPortion && (decision.Quantity == nil || *decision.Quantity != test.wantQuantity) {
+				t.Fatalf("decision = %#v, want quantity %v", decision, test.wantQuantity)
+			}
+		})
+	}
+}
+
+func TestPortionDecisionUsesOnlyQuantityLinkedToSelectedMeasure(t *testing.T) {
+	originalQuantity := 2.0
+	portionID := int64(21)
+	for _, test := range []struct {
+		name             string
+		message          string
+		measure          string
+		providerQuantity *float64
+		wantKind         ContinuationKind
+		wantQuantity     float64
+	}{
+		{name: "spaced latest override", message: "3 dilim", measure: "dilim", providerQuantity: float64Pointer(3), wantKind: ContinuationPortion, wantQuantity: 3},
+		{name: "compact latest override", message: "3dilim", measure: "dilim", providerQuantity: float64Pointer(3), wantKind: ContinuationPortion, wantQuantity: 3},
+		{name: "measure only reuses prior", message: "dilim olarak", measure: "dilim", wantKind: ContinuationPortion, wantQuantity: 2},
+		{name: "time number is unrelated", message: "dilim olarak, saat 3'te yedim", measure: "dilim", wantKind: ContinuationPortion, wantQuantity: 2},
+		{name: "meal count is unrelated", message: "dilim, bugün 3 öğün yedim", measure: "dilim", wantKind: ContinuationPortion, wantQuantity: 2},
+		{name: "linked quantity wins over time", message: "3 dilim, saat 2'de", measure: "dilim", providerQuantity: float64Pointer(3), wantKind: ContinuationPortion, wantQuantity: 3},
+		{name: "conflicting linked quantities", message: "2 dilim mi 3 dilim mi emin değilim", measure: "dilim", wantKind: ContinuationUnresolved},
+		{name: "unrelated word quantity", message: "dilim olarak, bir şey daha söyleyeyim", measure: "dilim", wantKind: ContinuationPortion, wantQuantity: 2},
+		{name: "adet alias", message: "3 tane", measure: "adet", providerQuantity: float64Pointer(3), wantKind: ContinuationPortion, wantQuantity: 3},
+		{name: "cup alias", message: "2 cup", measure: "bardak", providerQuantity: float64Pointer(2), wantKind: ContinuationPortion, wantQuantity: 2},
+		{name: "slice alias", message: "2 slices", measure: "dilim", providerQuantity: float64Pointer(2), wantKind: ContinuationPortion, wantQuantity: 2},
+		{name: "provider mismatch", message: "dilim olarak, saat 3'te yedim", measure: "dilim", providerQuantity: float64Pointer(3), wantKind: ContinuationUnresolved},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			request := ContinuationRequest{
+				Message: test.message, Kind: ClarificationAmount,
+				OriginalEvidence: "2 ekmek", OriginalIntent: foodintent.FoodIntent{Query: "ekmek", Quantity: &originalQuantity},
+				ResolvedFood: &ResolvedFood{FoodID: 7, DisplayName: "Ekmek", CanonicalName: "Bread"},
+				Candidates:   []FoodCandidate{}, Portions: []food.Portion{{ID: portionID, FoodID: 7, Amount: 1, Measure: test.measure, Grams: 30}},
+			}
+			decision, err := NewService(&stubInterpreter{continuation: ContinuationDecision{
+				Kind: ContinuationPortion, PortionID: &portionID, Quantity: test.providerQuantity,
+			}}).InterpretContinuation(context.Background(), request)
+			if err != nil {
+				t.Fatalf("InterpretContinuation: %v", err)
+			}
+			if decision.Kind != test.wantKind {
+				t.Fatalf("decision = %#v, want kind %s", decision, test.wantKind)
+			}
+			if test.wantKind == ContinuationPortion && (decision.Quantity == nil || *decision.Quantity != test.wantQuantity) {
+				t.Fatalf("decision = %#v, want quantity %v", decision, test.wantQuantity)
+			}
+		})
+	}
+}
+
+func float64Pointer(value float64) *float64 { return &value }
+
 func TestPortionDecisionRejectsTamperedOriginalQuantityEvidence(t *testing.T) {
 	claimed, unit := 5.0, "adet"
 	portionID := int64(21)

@@ -204,7 +204,7 @@ func validateDecision(request ContinuationRequest, decision *ContinuationDecisio
 			*decision = ContinuationDecision{Kind: ContinuationUnresolved}
 			return nil
 		}
-		effectiveQuantity, ok := effectivePortionQuantity(request, decision.Quantity)
+		effectiveQuantity, ok := effectivePortionQuantity(request, portion.Measure, decision.Quantity)
 		if !ok {
 			*decision = ContinuationDecision{Kind: ContinuationUnresolved}
 			return nil
@@ -381,8 +381,8 @@ func wordQuantityUnitPhraseEvidence(evidence string, wanted float64, unit string
 	return false
 }
 
-func effectivePortionQuantity(request ContinuationRequest, providerQuantity *float64) (float64, bool) {
-	latest := explicitQuantities(request.Message)
+func effectivePortionQuantity(request ContinuationRequest, measure string, providerQuantity *float64) (float64, bool) {
+	latest := explicitQuantitiesForMeasure(request.Message, measure)
 	if len(latest) > 1 {
 		return 0, false
 	}
@@ -406,13 +406,24 @@ func reusableOriginalQuantity(request ContinuationRequest) bool {
 	if request.OriginalIntent.Quantity == nil || strings.TrimSpace(request.OriginalEvidence) == "" {
 		return false
 	}
-	if request.OriginalIntent.UnitHint != nil {
-		switch canonicalUnitHint(*request.OriginalIntent.UnitHint) {
-		case "g", "kg", "ml", "l":
-			return false
+	if ValidateIntentEvidence(request.OriginalEvidence, request.OriginalIntent) != nil {
+		return false
+	}
+	return reusableBareCountEvidence(request.OriginalEvidence, request.OriginalIntent.Query, *request.OriginalIntent.Quantity)
+}
+
+func reusableBareCountEvidence(evidence, query string, wanted float64) bool {
+	return explicitCountEvidence(evidence, query, wanted)
+}
+
+func explicitQuantitiesForMeasure(evidence, measure string) []float64 {
+	values := make([]float64, 0, 2)
+	for _, candidate := range explicitQuantities(evidence) {
+		if quantityUnitPhraseEvidence(evidence, candidate, measure) {
+			values = appendDistinct(values, candidate)
 		}
 	}
-	return ValidateIntentEvidence(request.OriginalEvidence, request.OriginalIntent) == nil
+	return values
 }
 
 func explicitQuantities(evidence string) []float64 {
